@@ -27,7 +27,30 @@ To get started training these models in your own Workspace, simply follow the be
  2. Open the **data** Notebook and attached the Notebook to a Cluster. Select "Run all" at the top of the notebook to download and store the example datasets as Delta tables. Review the cell outputs to see data samples and charts.
  
  3. Open the **train** Notebook. Notice that the notebook allows the user to choose a training dataset and model type. To get started, choose the banking77 datasets and the distilbert model. This dataset is relatively small and the distilbert model is among the faster transformer models to train. You can either run the notebook against an interactive cluster or as a [Job](https://docs.databricks.com/data-engineering/jobs/index.html). If excuting via a Job, you can pass parameters to overwrite the default dropdown widget values. Additionally, by increasing the Job's Maximum concurrent runs, you can fit multiple transformers models concurrently by launching several jobs with different values for model type.
+
+    <img src="img/job_parameters.png" alt="Mlflow tracking server runs" style="height: 325px; width:560px;"/>
+    <p align="left">
+    <font size=2><i>Adjusting a Job's default parameters values to run different models against the same training dataset</i></font>
+    </p> 
+
+    <img src="img/multiple_job_runs.png" alt="Concurrent job runs" style="height: 425px; width:850px;"/>
+    <p align="left">
+    <font size=2><i>Training multiple transformers models in parallel using Databricks Jobs</i></font>
+    </p>
  
- 4. The train notebook will create a new MLflow Experiment. You can navigate to this Experiment by clicking the hyperlink that appears under the cell containing the MLflow logging logic, or, by navigating to the Experiments pane and selecting the Experiment named,  **transformer_experiments**. Each row in the Experiment corresponds to a different trained transformer model. Click on an entry, review its parameters and metrics, run multiple models against a dataset and compare their performance.
+ 4. The train notebook will create a new MLflow Experiment. You can navigate to this Experiment by clicking the hyperlink that appears under the cell containing the MLflow logging logic, or, by navigating to the Experiments pane and selecting the Experiment named,  **transformer_experiments**. Each row in the Experiment corresponds to a different trained transformer model. Click on an entry, review its parameters and metrics, run multiple models against a dataset and compare their performance.  
+ 
+    <img src="img/mlflow_model_comparisons.png" alt="Comapring MLflow models" style="height: 425px; width:925px;"/>
+    <p align="left">
+    <font size=2><i>Comparing transformer model runs in MLflow; notice the wide variation in model size and time taken to score 1,000 records</i></font>
+    </p>
+
+
  5. To leverage a trained model for inference, copy the **Run ID** of a model located in its Experiment run. Paste the ID in the text box at the top of the **inference** notebook, or, run the inference notebook as a Job and paste the Run ID as a parameter. The inference job is also intended to be run on a GPU-backed single-node cluster. The notebook will generate predictions for both the training and testing sets used to fit the model; it will then write these results to a new Delta table.
- 
+
+    
+    <img src="img/predictions.png" alt="Comapring MLflow models" style="height: 225px; width:775px;"/>
+    <p align="left">
+    <font size=2><i>Model predictions example for banking77 dataset</i></font>
+    </p>
+    
