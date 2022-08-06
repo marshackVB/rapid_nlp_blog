@@ -13,7 +13,10 @@ This Databricks Repo provides example implementions of [huggingface transformer]
  - **[Distilbert](https://huggingface.co/docs/transformers/model_doc/distilbert)**
  - **[Bert](https://huggingface.co/docs/transformers/model_doc/bert)**
  - **[DistilRoberta](https://huggingface.co/distilroberta-base)**
- - **[Roberta](https://huggingface.co/roberta-base)**  
+ - **[Roberta](https://huggingface.co/roberta-base)**    
+ - **[xtremedistil-l6-h256-uncased](https://huggingface.co/microsoft/xtremedistil-l6-h256-uncased)**  
+ - **[xtremedistil-l6-h384-uncased](https://huggingface.co/microsoft/xtremedistil-l6-h384-uncased)**
+ - **[xtremedistil-l12-h384-uncased](https://huggingface.co/microsoft/xtremedistil-l12-h384-uncased)**  
  
  Search for models suitable for a wide variety of tasks in the [huggingface model hub](https://huggingface.co/models)  
  
@@ -22,7 +25,9 @@ To get started training these models in your own Workspace, simply follow the be
  1. Close this github repository into a Databricks Repo  
  
  2. Open the **data** Notebook and attached the Notebook to a Cluster. Select "Run all" at the top of the notebook to download and store the example datasets as Delta tables. Review the cell outputs to see data samples and charts.
- 3. Open the **train** Notebook. Notice that the notebook allows the user to choose a training dataset and model type. To get started, choose the banking77 datasets and the distilbert model. This dataset is relatively small and the distilbert model is among the faster transformer models to train. You can either run the notebook against an interactive cluster or as a [Job](https://docs.databricks.com/data-engineering/jobs/index.html). If excuting via a Job, you can pass parameters to overwrite the default dropdown widget values.
+ 
+ 3. Open the **train** Notebook. Notice that the notebook allows the user to choose a training dataset and model type. To get started, choose the banking77 datasets and the distilbert model. This dataset is relatively small and the distilbert model is among the faster transformer models to train. You can either run the notebook against an interactive cluster or as a [Job](https://docs.databricks.com/data-engineering/jobs/index.html). If excuting via a Job, you can pass parameters to overwrite the default dropdown widget values. Additionally, by increasing the Job's Maximum concurrent runs, you can fit multiple transformers models concurrently by launching several jobs with different values for model type.
+ 
  4. The train notebook will create a new MLflow Experiment. You can navigate to this Experiment by clicking the hyperlink that appears under the cell containing the MLflow logging logic, or, by navigating to the Experiments pane and selecting the Experiment named,  **transformer_experiments**. Each row in the Experiment corresponds to a different trained transformer model. Click on an entry, review its parameters and metrics, run multiple models against a dataset and compare their performance.
  5. To leverage a trained model for inference, copy the **Run ID** of a model located in its Experiment run. Paste the ID in the text box at the top of the **inference** notebook, or, run the inference notebook as a Job and paste the Run ID as a parameter. The inference job is also intended to be run on a GPU-backed single-node cluster. The notebook will generate predictions for both the training and testing sets used to fit the model; it will then write these results to a new Delta table.
  
