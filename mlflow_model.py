@@ -1,15 +1,20 @@
 import mlflow
 import numpy as np
+import pandas as pd
 import torch
 from datasets import Dataset
-from transformers import pipeline, AutoConfig, AutoModelForSequenceClassification
+from transformers import pipeline, AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
+from typing import Optional, Union
 
 
-def get_predictions(data, model, tokenizer, batch_size, max_token_length, device=0, 
-                    padding="max_token_legnth", truncation=True, function_to_apply=None):
+def get_predictions(data:Dataset, model:AutoModelForSequenceClassification, tokenizer:AutoTokenizer, batch_size:str, 
+                    max_token_length:int, device:int=0, padding:str="max_token_length", truncation:bool=True, 
+                    function_to_apply:Optional[str]=None) -> np.array([[float]]):
   """
   Create a transformer pipeline and perform inference on an input dataset. The pipeline is comprised
   of a tokenizer and a model as well as additional parameters that govern the tokenizers behavior.
+  
+  See the documentation: https://huggingface.co/docs/transformers/v4.21.1/en/main_classes/pipelines#transformers.TextClassificationPipeline
   """
   
   inference_pipeline = pipeline(task =               "text-classification", 
@@ -45,8 +50,8 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
   index position in the list corresponds to its label.
   """
   
-  def __init__(self, max_token_length, inference_batch_size, truncation=True, padding='max_length', 
-               function_to_apply=None):
+  def __init__(self, max_token_length:str, inference_batch_size:str, truncation:bool=True, padding:str='max_length', 
+               function_to_apply:Optional[str]=None):
 
     self.max_token_length = max_token_length
     self.inference_batch_size = inference_batch_size
@@ -66,9 +71,11 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
     self.device = 0 if device.type == "cuda" else -1 
     
 
-  def predict(self, context, model_input):
+  def predict(self, context, model_input:Union[pd.DataFrame, Dataset]) -> np.array([[int, float]]):
     """
-    Perform inference, returning results as a numpy array of shape (number of rows, length of array)
+    Perform inference, returning results as a numpy array of shape (number of rows, length of array). 
+    The input dataset passed to the predict method can be either a Pandas DataFrame or a transformers 
+    Dataset
     """
     
     if not isinstance(model_input, Dataset):
