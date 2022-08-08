@@ -11,21 +11,11 @@ from collections import namedtuple
 import numpy as np
 import pandas as pd
 from datasets import load_dataset
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, ArrayType, FloatType
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, ArrayType, FloatType, LongType
 import pyspark.sql.functions as func
 from pyspark.sql.functions import col
 
 # COMMAND ----------
-
-def one_hot_labels(indxs):
-  num_labels = 28
-  labels = [0.] * num_labels
-  
-  for indx in indxs:
-    labels[indx] = 1.
-    
-  return labels
-
 
 def dataset_to_dataframes(dataset_name:str):
   
@@ -40,7 +30,7 @@ def dataset_to_dataframes(dataset_name:str):
   
   # Define Spark schemas
   single_label_schema = StructType([StructField("text", StringType(), False),
-                                   StructField("label", FloatType(), False)
+                                   StructField("label", LongType(), False)
                                     ])
   
   multi_label_schema = StructType([StructField("text", StringType(), False),
@@ -77,39 +67,17 @@ def dataset_to_dataframes(dataset_name:str):
     
   else:
     dataset = load_dataset(dataset_name)
-  
-    if dataset_name == "go_emotions":
+    
+    train_pd  = dataset['train'].to_pandas()
+    test_pd  =  dataset['test'].to_pandas()
 
-      train_pd = dataset['train'].to_pandas()[['text', 'labels']]
-      train_pd['is_train'] = 1
+    train_pd = train_pd.sample(frac=1).reset_index(drop=True)
+    test_pd = test_pd.sample(frac=1).reset_index(drop=True)
 
-      test_pd = pd.concat([dataset['test'].to_pandas(),
-                           dataset['validation'].to_pandas()])[['text', 'labels']]
-      test_pd['is_train'] = 0
+    train = spark.createDataFrame(train_pd, single_label_schema)
+    test = spark.createDataFrame(test_pd,   single_label_schema)
 
-      train_test_pd = pd.concat([train_pd, test_pd])
-      train_test_pd.rename(columns={"labels": "label_indxs"}, inplace=True)
-      # One-hot encode labels
-      train_test_pd['labels'] = train_test_pd.label_indxs.apply(lambda x: one_hot_labels(x))
-      train_test_pd.drop(columns=["label_indxs"], inplace=True)
-
-      train = spark.createDataFrame(train_test_pd[train_test_pd.is_train == 1][['text', 'labels']], schema=multi_label_schema)
-      test =  spark.createDataFrame(train_test_pd[train_test_pd.is_train == 0][['text', 'labels']],  schema=multi_label_schema)
-
-      idx_and_labels = dataset['train'].features['labels'].feature.names
-
-    else:
-
-      train_pd  = dataset['train'].to_pandas()
-      test_pd  =  dataset['test'].to_pandas()
-
-      train_pd = train_pd.sample(frac=1).reset_index(drop=True)
-      test_pd = test_pd.sample(frac=1).reset_index(drop=True)
-
-      train = spark.createDataFrame(train_pd, single_label_schema)
-      test = spark.createDataFrame(test_pd,   single_label_schema)
-
-      idx_and_labels = dataset['train'].features['label'].names
+    idx_and_labels = dataset['train'].features['label'].names
     
   id2label = [(idx, label) for idx, label  in enumerate(idx_and_labels)]
   labels = spark.createDataFrame(id2label, schema=labels_schema)
@@ -264,73 +232,8 @@ print(f"""
 
 # COMMAND ----------
 
-# MAGIC %md #### [Emotions](https://huggingface.co/datasets/go_emotions)  
+# MAGIC %md #### [Tweet Emotions](https://huggingface.co/datasets/sem_eval_2018_task_1)  
 # MAGIC Multi-label classification
-
-# COMMAND ----------
-
-emotions_train = "default.emotions_train"
-emotions_test = "default.emotions_test"
-emotions_labels = "default.emotions_labels"
-
-# COMMAND ----------
-
-emotions_dfs = dataset_to_dataframes("go_emotions")
-
-emotions_dfs.train.write.mode('overwrite').format('delta').saveAsTable(emotions_train)
-emotions_dfs.test.write.mode('overwrite').format('delta').saveAsTable(emotions_test)
-emotions_dfs.labels.write.mode('overwrite').format('delta').saveAsTable(emotions_labels)
-
-# COMMAND ----------
-
-emotions_train_df = spark.table(emotions_train)
-emotions_test_df = spark.table(emotions_test)
-emotions_labels_df = spark.table(emotions_labels)
-
-# COMMAND ----------
-
-# MAGIC %md ##### Raw data
-
-# COMMAND ----------
-
-display(emotions_train_df)
-
-# COMMAND ----------
-
-# MAGIC %md ##### Labels
-
-# COMMAND ----------
-
-display(emotions_labels_df.orderBy('idx'))
-
-# COMMAND ----------
-
-# MAGIC %md ##### Record counts
-
-# COMMAND ----------
-
-print(f"train_cnt: {emotions_train_df.count()}, test_cnt: {emotions_test_df.count()}, labels_cnt: {emotions_labels_df.count()}")
-
-# COMMAND ----------
-
-# MAGIC %md ##### Distribution of token lengths
-
-# COMMAND ----------
-
-display(get_token_length_counts(emotions_train))
-
-# COMMAND ----------
-
-token_lengths = get_token_length_counts(emotions_train, group_count=False)
-
-print(f"""
-        quantiles: {token_lengths.approxQuantile("token_length", [0.25, 0.5, 0.75], 0)}
-        deciles: {token_lengths.approxQuantile("token_length", list(np.arange(0.1, 1, 0.1)), 0)}
-       """)
-
-# COMMAND ----------
-
-# MAGIC %md #### [Tweet Emotions](https://huggingface.co/datasets/sem_eval_2018_task_1)
 
 # COMMAND ----------
 

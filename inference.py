@@ -100,10 +100,6 @@ elif training_dataset == 'imdb':
   inference_df = union_train_test("default.imdb_train", "default.imdb_test")
   output_table_name = "default.imdb_predictions"
   
-elif training_dataset == 'emotions':
-  inference_df = union_train_test("default.emotions_train", "default.emotions_test")
-  output_table_name = "default.emotions_predictions"
-  
 elif training_dataset == 'tweet_emotions':
   inference_df = union_train_test("default.tweet_emotions_train", "default.tweet_emotions_test")
   output_table_name = "default.tweet_emotions_predictions"
@@ -145,7 +141,7 @@ predictions = pd.concat([inference_pd,
 # Transform predictions and specify Spark DataFrame schema
 schema = StructType()
 
-if training_dataset in ['emotions', 'tweet_emotions']:
+if training_dataset == 'tweet_emotions':
   
   schema.add("text", StringType())
   schema.add("all_label_indxs", ArrayType(FloatType()))

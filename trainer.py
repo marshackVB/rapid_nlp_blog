@@ -39,17 +39,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # COMMAND ----------
 
-datasets = ["banking77", "imdb", "emotions", "tweet_emotions"]
+datasets = ["banking77", "imdb", "tweet_emotions"]
 
 supported_models = ["distilbert-base-uncased",
                     "bert-base-uncased", 
                     "bert-base-cased",
-                    "roberta-base", 
                     "distilroberta-base",
+                    "roberta-base", 
                     "microsoft/xtremedistil-l6-h256-uncased",
                     "microsoft/xtremedistil-l6-h384-uncased",
-                    "microsoft/xtremedistil-l12-h384-uncased",
-                    "microsoft/deberta-base-mnli",
+                    "microsoft/xtremedistil-l12-h384-uncased"
                     ]
 
 dbutils.widgets.dropdown("dataset_name", datasets[0], datasets)
@@ -89,27 +88,16 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                             "problem_type": "single_label_classification"
                            },
                     
-                    "emotions": {"train": "default.emotions_train",
-                                 "test": "default.emotions_test",
-                                 "labels": "default.emotions_labels",
-                                 "num_labels": 28,
-                                 "max_token_length": 28,
-                                 "inference_batch_size": 1000,
-                                 "per_device_train_batch_size": 64,
-                                 "per_device_eval_batch_size": 64,
-                                 "problem_type": "multi_label_classification"
-                         },
-                    
                     "tweet_emotions": {"train": "default.tweet_emotions_train",
-                                 "test": "default.tweet_emotions_test",
-                                 "labels": "default.tweet_emotions_labels",
-                                 "num_labels": 11,
-                                 "max_token_length": 50,
-                                 "inference_batch_size": 1000,
-                                 "per_device_train_batch_size":16,
-                                 "per_device_eval_batch_size": 16,
-                                 "problem_type": "multi_label_classification"
-                         }
+                                       "test": "default.tweet_emotions_test",
+                                       "labels": "default.tweet_emotions_labels",
+                                       "num_labels": 11,
+                                       "max_token_length": 50,
+                                       "inference_batch_size": 1000,
+                                       "per_device_train_batch_size":16,
+                                       "per_device_eval_batch_size": 16,
+                                       "problem_type": "multi_label_classification"
+                               }
                    }
 
 data_args = datasets_mapping[dataset]
@@ -205,7 +193,7 @@ def tokenize(batch):
 
 
 train_test_tokenized = train_test.map(tokenize, batched=True, batch_size=tokenizer_args['tokenizer_batch_size']) 
-train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset in ["emotions", "tweet_emotions"] else 'label'])
+train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset == "tweet_emotions" else 'label'])
 
 
 def model_init():
