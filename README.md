@@ -5,7 +5,8 @@ This Databricks Repo provides example implementions of [huggingface transformer]
 ##### Datasets:
  - **[IMDB](https://huggingface.co/datasets/imdb)**: *binary classification*
  - **[Banking77](https://huggingface.co/datasets/banking77)**: *mutli-class classification*
- - **[Emotions](https://huggingface.co/datasets/go_emotions)**: *multi-label classification*
+ - **[Emotions](https://huggingface.co/datasets/go_emotions)**: *multi-label classification*  
+ - **[Tweet Emotions](https://huggingface.co/datasets/sem_eval_2018_task_1)**: *multi-label classification*  
  
  Search for additional datasets in the [huggingface data hub](https://huggingface.co/datasets)
    

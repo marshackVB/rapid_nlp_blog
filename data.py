@@ -3,7 +3,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q -r requirements.txt
+# MAGIC %pip install datasets
 
 # COMMAND ----------
 
@@ -38,58 +38,81 @@ def dataset_to_dataframes(dataset_name:str):
   
   spark_datasets = namedtuple("spark_datasets", "train test labels")
   
+  # Define Spark schemas
+  single_label_schema = StructType([StructField("text", StringType(), False),
+                                   StructField("label", FloatType(), False)
+                                    ])
+  
+  multi_label_schema = StructType([StructField("text", StringType(), False),
+                                   StructField("labels", ArrayType(FloatType()), False)
+                                    ])
+  
   labels_schema = StructType([StructField("idx", IntegerType(), False),
-                            StructField("label", StringType(), False)])
+                             StructField("label", StringType(), False)])
   
-  dataset = load_dataset(dataset_name)
-  
-  if dataset_name == "go_emotions":
+  if dataset_name == "sem_eval_2018_task_1":
+    dataset = load_dataset(dataset_name, "subtask5.english")
     
-    # Transform train dataset
-    train_pd = pd.DataFrame(dataset['train'])[['text', 'labels']]
+    text_col = 'Tweet'
+    non_label_cols = ['ID'] + [text_col]
+    idx_and_labels = [col for col in dataset['train'].features.keys() if col not in non_label_cols]
+    
+    train_pd = pd.concat([dataset['train'].to_pandas(),
+                          dataset['validation'].to_pandas()])
+    train_pd['is_train'] = 1
 
-    train_pd.rename(columns={"labels": "label_indxs"}, inplace=True)
-    # One-hot encode labels
-    train_pd['labels'] = train_pd.label_indxs.apply(lambda x: one_hot_labels(x))
-    train_pd.drop(columns=["label_indxs"], inplace=True)
+    test_pd = dataset['test'].to_pandas()
 
-    # Combine test and validations sets
-    test_pd = pd.concat([pd.DataFrame(dataset['test']),
-                         pd.DataFrame(dataset['validation'])])[['text', 'labels']]
+    test_pd['is_train'] = 0
 
-    test_pd.rename(columns={"labels": "label_indxs"}, inplace=True)
-    test_pd['labels'] = test_pd.label_indxs.apply(lambda x: one_hot_labels(x))
-    test_pd.drop(columns=["label_indxs"], inplace=True)
-
-    # Define Spark schema
-    schema = StructType([StructField("text", StringType(), False),
-                         StructField("labels", ArrayType(FloatType()), False)
-                        ])
-
-    train = spark.createDataFrame(train_pd, schema=schema)
-    test =  spark.createDataFrame(test_pd, schema=schema)
-
-
-    idx_and_labels = dataset['train'].features['labels'].feature.names
-    id2label = [(idx, label) for idx, label  in enumerate(idx_and_labels)]
-
-    labels = spark.createDataFrame(id2label, schema=labels_schema)
+    train_test_pd = pd.concat([train_pd, test_pd])
+    
+    train_test_pd['labels'] = train_test_pd[idx_and_labels].values.tolist()
+    train_test_pd['labels'] = train_test_pd.labels.apply(lambda x: [1. if i is True else 0. for i in x])
+    train_test_pd.rename(columns = {text_col: "text"}, inplace=True)
+    train_test_pd = train_test_pd[['text', 'labels', 'is_train']]
+    
+    train = spark.createDataFrame(train_test_pd[train_test_pd.is_train == 1][['text', 'labels']], schema=multi_label_schema)
+    test = spark.createDataFrame(train_test_pd[train_test_pd.is_train == 0][['text', 'labels']],  schema=multi_label_schema)
     
   else:
+    dataset = load_dataset(dataset_name)
+  
+    if dataset_name == "go_emotions":
 
-    train_pd  = dataset['train'].to_pandas()
-    test_pd  =  dataset['test'].to_pandas()
+      train_pd = dataset['train'].to_pandas()[['text', 'labels']]
+      train_pd['is_train'] = 1
 
-    train_pd = train_pd.sample(frac=1).reset_index(drop=True)
-    test_pd = test_pd.sample(frac=1).reset_index(drop=True)
+      test_pd = pd.concat([dataset['test'].to_pandas(),
+                           dataset['validation'].to_pandas()])[['text', 'labels']]
+      test_pd['is_train'] = 0
 
-    train = spark.createDataFrame(train_pd)
-    test = spark.createDataFrame(test_pd)
+      train_test_pd = pd.concat([train_pd, test_pd])
+      train_test_pd.rename(columns={"labels": "label_indxs"}, inplace=True)
+      # One-hot encode labels
+      train_test_pd['labels'] = train_test_pd.label_indxs.apply(lambda x: one_hot_labels(x))
+      train_test_pd.drop(columns=["label_indxs"], inplace=True)
 
-    idx_and_labels = dataset['train'].features['label'].names
-    id2label = [(idx, label) for idx, label  in enumerate(idx_and_labels)]
+      train = spark.createDataFrame(train_test_pd[train_test_pd.is_train == 1][['text', 'labels']], schema=multi_label_schema)
+      test =  spark.createDataFrame(train_test_pd[train_test_pd.is_train == 0][['text', 'labels']],  schema=multi_label_schema)
 
-    labels = spark.createDataFrame(id2label, schema=labels_schema)
+      idx_and_labels = dataset['train'].features['labels'].feature.names
+
+    else:
+
+      train_pd  = dataset['train'].to_pandas()
+      test_pd  =  dataset['test'].to_pandas()
+
+      train_pd = train_pd.sample(frac=1).reset_index(drop=True)
+      test_pd = test_pd.sample(frac=1).reset_index(drop=True)
+
+      train = spark.createDataFrame(train_pd, single_label_schema)
+      test = spark.createDataFrame(test_pd,   single_label_schema)
+
+      idx_and_labels = dataset['train'].features['label'].names
+    
+  id2label = [(idx, label) for idx, label  in enumerate(idx_and_labels)]
+  labels = spark.createDataFrame(id2label, schema=labels_schema)
 
   return spark_datasets(train, test, labels)
 
@@ -109,7 +132,8 @@ def get_token_length_counts(delta_table, group_count=True):
 
 # COMMAND ----------
 
-# MAGIC %md #### [Banking77 dataset](https://huggingface.co/datasets/banking77)
+# MAGIC %md #### [Banking77 dataset](https://huggingface.co/datasets/banking77)  
+# MAGIC Multi-class classification
 
 # COMMAND ----------
 
@@ -175,6 +199,7 @@ print(f"""
 # COMMAND ----------
 
 # MAGIC %md #### [IMDB dataset](https://huggingface.co/datasets/imdb) 
+# MAGIC Binary classification
 
 # COMMAND ----------
 
@@ -239,7 +264,8 @@ print(f"""
 
 # COMMAND ----------
 
-# MAGIC %md #### [Emotions](https://huggingface.co/datasets/go_emotions)
+# MAGIC %md #### [Emotions](https://huggingface.co/datasets/go_emotions)  
+# MAGIC Multi-label classification
 
 # COMMAND ----------
 
@@ -301,3 +327,73 @@ print(f"""
         quantiles: {token_lengths.approxQuantile("token_length", [0.25, 0.5, 0.75], 0)}
         deciles: {token_lengths.approxQuantile("token_length", list(np.arange(0.1, 1, 0.1)), 0)}
        """)
+
+# COMMAND ----------
+
+# MAGIC %md #### [Tweet Emotions](https://huggingface.co/datasets/sem_eval_2018_task_1)
+
+# COMMAND ----------
+
+dataset = load_dataset("sem_eval_2018_task_1", "subtask5.english")
+
+# COMMAND ----------
+
+tweet_emotions_train =  "default.tweet_emotions_train"
+tweet_emotions_test =   "default.tweet_emotions_test"
+tweet_emotions_labels = "default.tweet_emotions_labels"
+
+# COMMAND ----------
+
+tweet_emotions_dfs = dataset_to_dataframes("sem_eval_2018_task_1")
+
+tweet_emotions_dfs.train.write.mode('overwrite').format('delta').saveAsTable(tweet_emotions_train)
+tweet_emotions_dfs.test.write.mode('overwrite').format('delta').saveAsTable(tweet_emotions_test)
+tweet_emotions_dfs.labels.write.mode('overwrite').format('delta').saveAsTable(tweet_emotions_labels)
+
+# COMMAND ----------
+
+tweet_emotions_train_df = spark.table(tweet_emotions_train)
+tweet_emotions_test_df = spark.table(tweet_emotions_test)
+tweet_emotions_labels_df = spark.table(tweet_emotions_labels)
+
+# COMMAND ----------
+
+# MAGIC %md ##### Raw data
+
+# COMMAND ----------
+
+display(tweet_emotions_train_df)
+
+# COMMAND ----------
+
+# MAGIC %md ##### Labels
+
+# COMMAND ----------
+
+display(tweet_emotions_train_df)
+
+# COMMAND ----------
+
+# MAGIC %md ##### Record counts
+
+# COMMAND ----------
+
+print(f"train_cnt: {tweet_emotions_train_df.count()}, test_cnt: {tweet_emotions_test_df.count()}, labels_cnt: {tweet_emotions_labels_df.count()}")
+
+# COMMAND ----------
+
+# MAGIC %md ##### Distribution of token lengths
+
+# COMMAND ----------
+
+display(get_token_length_counts(tweet_emotions_train))
+
+# COMMAND ----------
+
+token_lengths = get_token_length_counts(tweet_emotions_train, group_count=False)
+
+print(f"""
+        quantiles: {token_lengths.approxQuantile("token_length", [0.25, 0.5, 0.75], 0)}
+        deciles: {token_lengths.approxQuantile("token_length", list(np.arange(0.1, 1, 0.1)), 0)}
+       """)
+

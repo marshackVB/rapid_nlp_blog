@@ -15,6 +15,7 @@ import pandas as pd
 import mlflow
 from mlflow.tracking import MlflowClient
 from pyspark.sql.types import StructType, StructField, ArrayType, StringType, FloatType, IntegerType
+from pyspark.sql import DataFrame
 import pyspark.sql.functions as func
 from pyspark.sql.functions import col, create_map, lit
 from utils import get_run_id
@@ -82,7 +83,7 @@ promote_to_prod = client.transition_model_version_stage(name=model_registry_name
 
 # COMMAND ----------
 
-def union_train_test(train_df, test_df):
+def union_train_test(train_df:DataFrame, test_df:DataFrame) -> DataFrame:
   return (spark.table(train_df).withColumn("is_train", func.lit(1))
                                .unionAll(
                                  spark.table(test_df).withColumn("is_train", func.lit(0))
@@ -102,6 +103,10 @@ elif training_dataset == 'imdb':
 elif training_dataset == 'emotions':
   inference_df = union_train_test("default.emotions_train", "default.emotions_test")
   output_table_name = "default.emotions_predictions"
+  
+elif training_dataset == 'tweet_emotions':
+  inference_df = union_train_test("default.tweet_emotions_train", "default.tweet_emotions_test")
+  output_table_name = "default.tweet_emotions_predictions"
   
 else:
   raise Exception(f"Training and testing datasets are not known")
@@ -140,7 +145,7 @@ predictions = pd.concat([inference_pd,
 # Transform predictions and specify Spark DataFrame schema
 schema = StructType()
 
-if training_dataset == 'emotions':
+if training_dataset in ['emotions', 'tweet_emotions']:
   
   schema.add("text", StringType())
   schema.add("all_label_indxs", ArrayType(FloatType()))
@@ -155,8 +160,11 @@ if training_dataset == 'emotions':
                               "probabilities": "pred_proba_label_indxs"}, inplace = True)
              
   predictions['predicted_label_indxs'] = predictions.pred_proba_label_indxs.apply(lambda x: np.where(np.array(x) > 0.5)[0].tolist())
+  
   predictions['predicted_labels'] = predictions.predicted_label_indxs.apply(lambda x: [id2label[idx] for idx in x])
+  
   predictions['label_indxs'] = predictions.all_label_indxs.apply(lambda x: np.where(np.array(x) == 1.0)[0].tolist())
+  
   predictions['labels'] = predictions.label_indxs.apply(lambda x: [id2label[idx] for idx in x])
   
              
@@ -174,8 +182,11 @@ else:
   predictions.rename(columns={"label": "label_indx"}, inplace = True)
 
   predictions['predicted_probability'] = predictions.probabilities.apply(lambda x: max(x))
+  
   predictions['predicted_label_idx'] = predictions.apply(lambda x: x['probabilities'].index(x['predicted_probability']), axis=1)
+  
   predictions['predicted_label'] = predictions.predicted_label_idx.apply(lambda x: id2label[x])
+  
   predictions['label'] = predictions.label_indx.apply(lambda x: id2label[x])
 
   

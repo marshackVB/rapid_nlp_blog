@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from datasets import load_dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, AutoConfig, EarlyStoppingCallback, pipeline, EvalPrediction
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, AutoConfig, EarlyStoppingCallback, pipeline, EvalPrediction, AutoModel
 from sklearn.metrics import precision_recall_fscore_support
 from scipy.stats import logistic
 import mlflow
@@ -27,7 +27,7 @@ from pyspark.sql.types import StructType, StructField, FloatType, StringType, Ar
 from pyspark.sql.functions import struct
 from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_run_id
 
-from mlflow_model_final import MLflowModel, get_predictions
+from mlflow_model import MLflowModel, get_predictions
 
 mlflow.autolog(disable=True)
 
@@ -39,13 +39,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # COMMAND ----------
 
-datasets = ["banking77", "imdb", "emotions"]
+datasets = ["banking77", "imdb", "emotions", "tweet_emotions"]
 
 supported_models = ["distilbert-base-uncased",
                     "bert-base-uncased", 
                     "bert-base-cased",
                     "roberta-base", 
-                    "distilroberta-base"]
+                    "distilroberta-base",
+                    "microsoft/xtremedistil-l6-h256-uncased",
+                    "microsoft/xtremedistil-l6-h384-uncased",
+                    "microsoft/xtremedistil-l12-h384-uncased",
+                    "microsoft/deberta-base-mnli",
+                    ]
 
 dbutils.widgets.dropdown("dataset_name", datasets[0], datasets)
 dbutils.widgets.dropdown("model_type", supported_models[0], supported_models)
@@ -64,7 +69,6 @@ print(dataset, model_type)
 datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                  "test": "default.banking77_test",
                                  "labels": "default.banking77_labels",
-                                 "output_table_name": "banking77_predictions",
                                  "num_labels": 77,
                                  "max_token_length": 20,
                                  "inference_batch_size": 1000,
@@ -77,24 +81,33 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                    "imdb": {"train": "default.imdb_train",
                             "test": "default.imdb_test",
                             "labels": "default.imdb_labels",
-                            "output_table_name": "imdb_predictions",
                             "num_labels": 2,
                             "max_token_length": 325,
                             "inference_batch_size": 256,
-                            "per_device_train_batch_size": 16,
-                            "per_device_eval_batch_size": 16,
+                            "per_device_train_batch_size": 32,
+                            "per_device_eval_batch_size": 32,
                             "problem_type": "single_label_classification"
                            },
                     
                     "emotions": {"train": "default.emotions_train",
                                  "test": "default.emotions_test",
                                  "labels": "default.emotions_labels",
-                                 "output_table_name": "emotions_predictions",
                                  "num_labels": 28,
                                  "max_token_length": 28,
                                  "inference_batch_size": 1000,
                                  "per_device_train_batch_size": 64,
-                                 "per_device_eval_batch_size": 164,
+                                 "per_device_eval_batch_size": 64,
+                                 "problem_type": "multi_label_classification"
+                         },
+                    
+                    "tweet_emotions": {"train": "default.tweet_emotions_train",
+                                 "test": "default.tweet_emotions_test",
+                                 "labels": "default.tweet_emotions_labels",
+                                 "num_labels": 11,
+                                 "max_token_length": 50,
+                                 "inference_batch_size": 1000,
+                                 "per_device_train_batch_size":16,
+                                 "per_device_eval_batch_size": 16,
                                  "problem_type": "multi_label_classification"
                          }
                    }
@@ -119,7 +132,7 @@ training_args =   {"output_dir":                  f'/Users/{current_user}/Docume
                    "per_device_train_batch_size": data_args["per_device_train_batch_size"],
                    "per_device_eval_batch_size":  data_args["per_device_eval_batch_size"],
                    "weight_decay":                0.01,
-                   "num_train_epochs":            1,
+                   "num_train_epochs":            10,
                    "save_strategy":               "epoch", 
                    "evaluation_strategy":         "epoch",
                    "load_best_model_at_end":      True,
@@ -182,7 +195,7 @@ model_config = AutoConfig.from_pretrained(model_type,
                                           label2id =   label2id,
                                           problem_type = model_args['problem_type'])
 
-def tokenize(batch: DatasetDict) -> DatasetDict:
+def tokenize(batch):
   """Tokenize input text in batches"""
 
   return tokenizer(batch[model_args['feature_col']], 
@@ -192,7 +205,7 @@ def tokenize(batch: DatasetDict) -> DatasetDict:
 
 
 train_test_tokenized = train_test.map(tokenize, batched=True, batch_size=tokenizer_args['tokenizer_batch_size']) 
-train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset == "emotions" else 'label'])
+train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset in ["emotions", "tweet_emotions"] else 'label'])
 
 
 def model_init():
@@ -264,7 +277,7 @@ trainer.save_model('/model')
 tokenizer.save_pretrained('/tokenizer')
 
 
-def time_inference(tokenizer, model, sample_size=1000, iterations=3):
+def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=1000, iterations:int=3):
   """Measure inference latency give a sample of records. Perform inference 
   multiple times and return the mean inference time"""
 
