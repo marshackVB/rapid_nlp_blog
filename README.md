@@ -22,7 +22,7 @@ This Databricks Repo provides example implementions of [huggingface transformer]
  
 #### Getting started:  
 To get started training these models in your own Workspace, simply follow the below steps. Note that both model training and inference are intended to be perfomed using single-node, GPU-backed clusters that leverage the Databricks ML runtime. The project was most recently tested using Databricks ML runtime 11.0 and a virtual machine type equiped with a single GPU. The transformers library will distributed model training across multiple GPUs if your virtual machine has more than one.
- 1. Close this github repository into a Databricks Repo  
+ 1. Clone this github repository into a Databricks Repo  
  
  2. Open the **data** Notebook and attached the Notebook to a Cluster. Select "Run all" at the top of the notebook to download and store the example datasets as Delta tables. Review the cell outputs to see data samples and charts.
  
