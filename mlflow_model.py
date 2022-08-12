@@ -29,7 +29,7 @@ def get_predictions(data:Dataset, model:AutoModelForSequenceClassification, toke
   predictions = inference_pipeline(data,
                                    padding = padding,
                                    truncation = truncation,
-                                   max_length = 512)
+                                   max_length = max_length)
 
   # Spark return type is ArrayType(FloatType())
   predictions_to_array = [[round(dct['score'], 4) for dct in prediction] for prediction in predictions]
