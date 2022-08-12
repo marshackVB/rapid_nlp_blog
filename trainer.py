@@ -137,7 +137,7 @@ training_args =   {"output_dir":                  f'/Users/{current_user}/Docume
                    "per_device_train_batch_size": data_args["per_device_train_batch_size"],
                    "per_device_eval_batch_size":  data_args["per_device_eval_batch_size"],
                    "weight_decay":                0.01,
-                   "num_train_epochs":            1,
+                   "num_train_epochs":            10,
                    "save_strategy":               "epoch", 
                    "evaluation_strategy":         "epoch",
                    "load_best_model_at_end":      True,

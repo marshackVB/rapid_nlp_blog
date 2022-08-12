@@ -22,7 +22,7 @@ def get_predictions(data:Dataset, model:AutoModelForSequenceClassification, toke
                                 tokenizer =          tokenizer,
                                 batch_size =         batch_size,
                                 device =             device,
-                                top_k =              None, 
+                                return_all_scores =  True,
                                 function_to_apply =  function_to_apply,
                                 framework =          "pt")
   
