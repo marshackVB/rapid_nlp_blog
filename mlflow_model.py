@@ -8,7 +8,7 @@ from typing import Optional, Union
 
 
 def get_predictions(data:Dataset, model:AutoModelForSequenceClassification, tokenizer:AutoTokenizer, batch_size:str, 
-                    max_token_length:int, device:int=0, padding:str="max_token_length", truncation:bool=True, 
+                    device:int=0, padding:bool=True, truncation:bool=True, max_length:int=512,
                     function_to_apply:Optional[str]=None) -> np.array([[float]]):
   """
   Create a transformer pipeline and perform inference on an input dataset. The pipeline is comprised
@@ -22,14 +22,14 @@ def get_predictions(data:Dataset, model:AutoModelForSequenceClassification, toke
                                 tokenizer =          tokenizer,
                                 batch_size =         batch_size,
                                 device =             device,
-                                return_all_scores =  True, 
+                                top_k =              None, 
                                 function_to_apply =  function_to_apply,
                                 framework =          "pt")
   
   predictions = inference_pipeline(data,
                                    padding = padding,
-                                   max_length = max_token_length,
-                                   truncation = truncation)
+                                   truncation = truncation,
+                                   max_length = 512)
 
   # Spark return type is ArrayType(FloatType())
   predictions_to_array = [[round(dct['score'], 4) for dct in prediction] for prediction in predictions]
@@ -50,13 +50,13 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
   index position in the list corresponds to its label.
   """
   
-  def __init__(self, max_token_length:str, inference_batch_size:str, truncation:bool=True, padding:str='max_length', 
+  def __init__(self, inference_batch_size:str, truncation:bool=True, padding:bool=True, max_length:int=512,
                function_to_apply:Optional[str]=None):
 
-    self.max_token_length = max_token_length
     self.inference_batch_size = inference_batch_size
     self.truncation = truncation
     self.padding = padding
+    self.max_length = max_length
     self.function_to_apply = function_to_apply
     
     
@@ -87,10 +87,10 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
                                   model = context.artifacts['model'], 
                                   tokenizer = context.artifacts['tokenizer'], 
                                   batch_size = self.inference_batch_size, 
-                                  padding = self.padding, 
-                                  max_token_length = self.max_token_length, 
                                   device = self.device,
+                                  padding = self.padding, 
                                   truncation = self.truncation, 
+                                  max_length = self.max_length,
                                   function_to_apply =  self.function_to_apply)
     
     return predictions

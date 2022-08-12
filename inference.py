@@ -14,7 +14,14 @@ import numpy as np
 import pandas as pd
 import mlflow
 from mlflow.tracking import MlflowClient
-from pyspark.sql.types import StructType, StructField, ArrayType, StringType, FloatType, IntegerType
+
+from pyspark.sql.types import (StructType, 
+                               StructField, 
+                               ArrayType, 
+                               StringType, 
+                               FloatType,
+                               IntegerType)
+
 from pyspark.sql import DataFrame
 import pyspark.sql.functions as func
 from pyspark.sql.functions import col, create_map, lit
@@ -79,7 +86,7 @@ promote_to_prod = client.transition_model_version_stage(name=model_registry_name
 
 # COMMAND ----------
 
-# MAGIC %md Create a Pandas DataFrame of records to score. A huggingface Dataset could also be passed to the model and could be sourced directly from the parquet files underlying a Delta table. See the training notebook datset generation workflow for an example of this technique.
+# MAGIC %md Create a Pandas DataFrame of records to score. A huggingface Dataset could also be passed to the model and could be sourced directly from the parquet files underlying a Delta table. See the training notebook dataset generation workflow for an example of this technique.
 
 # COMMAND ----------
 

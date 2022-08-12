@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md ## Model training workflow  
-# MAGIC This notebook trains transformers models on various datasets. See the drop down menue above for the list of support models and training datasts.
+# MAGIC This notebook trains transformers models on various datasets. See the drop down menue above for the list of support models and training datasets.
 
 # COMMAND ----------
 
@@ -17,13 +17,29 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from datasets import load_dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, AutoConfig, EarlyStoppingCallback, pipeline, EvalPrediction, AutoModel
+from transformers import (AutoConfig,
+                          AutoTokenizer, 
+                          AutoModel,
+                          AutoModelForSequenceClassification, 
+                          EarlyStoppingCallback, 
+                          EvalPrediction, 
+                          DataCollatorWithPadding,
+                          pipeline,
+                          TrainingArguments, 
+                          Trainer)
+                          
 from sklearn.metrics import precision_recall_fscore_support
 from scipy.stats import logistic
 import mlflow
 from mlflow.tracking import MlflowClient
 from mlflow.types import ColSpec, DataType, Schema
-from pyspark.sql.types import StructType, StructField, FloatType, StringType, ArrayType, IntegerType
+from pyspark.sql.types import (StructType, 
+                               StructField, 
+                               FloatType, 
+                               StringType, 
+                               ArrayType, 
+                               IntegerType)
+
 from pyspark.sql.functions import struct
 from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_run_id
 
@@ -61,30 +77,33 @@ print(dataset, model_type)
 
 # COMMAND ----------
 
-# MAGIC %md ##### Specify model, tokenizer, and training parameters
+# MAGIC %md ##### Specify model, tokenizer, and training parameters 
 
 # COMMAND ----------
+
+# Experience with different batch sizes; if you run into GPU memory issues,
+# reduce the batch size. The sequence length for the imdb dataset is 
+# considerably larger than the others, so the batch size is reduced.
+batch_size = 16 if dataset == 'imdb' else 64
+inference_batch_size = 256
 
 datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                  "test": "default.banking77_test",
                                  "labels": "default.banking77_labels",
                                  "num_labels": 77,
-                                 "max_token_length": 20,
-                                 "inference_batch_size": 1000,
-                                 "per_device_train_batch_size": 128,
-                                 "per_device_eval_batch_size": 128,
-                                 "problem_type": "single_label_classification"
-                                  
+                                 "inference_batch_size": inference_batch_size,
+                                 "per_device_train_batch_size": batch_size,
+                                 "per_device_eval_batch_size": batch_size,
+                                 "problem_type": "single_label_classification" 
                                  },
                   
                    "imdb": {"train": "default.imdb_train",
                             "test": "default.imdb_test",
                             "labels": "default.imdb_labels",
                             "num_labels": 2,
-                            "max_token_length": 325,
-                            "inference_batch_size": 256,
-                            "per_device_train_batch_size": 32,
-                            "per_device_eval_batch_size": 32,
+                            "inference_batch_size": inference_batch_size,
+                            "per_device_train_batch_size": batch_size,
+                            "per_device_eval_batch_size": batch_size,
                             "problem_type": "single_label_classification"
                            },
                     
@@ -92,26 +111,24 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                        "test": "default.tweet_emotions_test",
                                        "labels": "default.tweet_emotions_labels",
                                        "num_labels": 11,
-                                       "max_token_length": 50,
-                                       "inference_batch_size": 1000,
-                                       "per_device_train_batch_size":16,
-                                       "per_device_eval_batch_size": 16,
+                                       "inference_batch_size": inference_batch_size,
+                                       "per_device_train_batch_size":batch_size,
+                                       "per_device_eval_batch_size": batch_size,
                                        "problem_type": "multi_label_classification"
                                }
                    }
 
 data_args = datasets_mapping[dataset]
 
-
 model_args =     {"feature_col":              "text",
                   "num_labels":               data_args["num_labels"],
                   "inference_batch_size":     data_args["inference_batch_size"],
-                  "problem_type":             data_args["problem_type"]}
+                  "problem_type":             data_args["problem_type"],
+                  "max_length":               512}
 
-tokenizer_args =  {"tokenizer_batch_size":  64,
-                   "max_token_length":      data_args['max_token_length'],
-                   "padding":               "max_length",
-                   "truncation":            True}
+tokenizer_args =  {"tokenizer_batch_size":  batch_size,
+                   "truncation":            True,
+                   "padding":               True}
 
 current_user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get().split('@')[0]
 
@@ -120,7 +137,7 @@ training_args =   {"output_dir":                  f'/Users/{current_user}/Docume
                    "per_device_train_batch_size": data_args["per_device_train_batch_size"],
                    "per_device_eval_batch_size":  data_args["per_device_eval_batch_size"],
                    "weight_decay":                0.01,
-                   "num_train_epochs":            10,
+                   "num_train_epochs":            1,
                    "save_strategy":               "epoch", 
                    "evaluation_strategy":         "epoch",
                    "load_best_model_at_end":      True,
@@ -170,12 +187,14 @@ get_or_create_experiment(experiment_location)
 # COMMAND ----------
 
 # MAGIC %md ##### Train models and log to MLflow  
+# MAGIC 
+# MAGIC Regarding tokenization, [various strategies](https://huggingface.co/docs/transformers/pad_truncation) can be used to truncate and pad sequences. In this example, sequences are truncated to the model's maximum accepted length, then, during model training, the sequences in each batch are padded to the longest sequence within the batch. For instance, if one batch of 16 observations has a single record with tokenized length of 512, all other records in that batch will be padded to length 512. You can optionally truncate sequences to a size less than the model's maximum accepted sequence length by setting "max_length < 512" and setting "truncation = 'max_length'". You could then remove the [DataCollatorWithPadding](https://www.youtube.com/watch?v=-RPeakdlHYo) object from the Trainer's arguments; the collator is responsible for padding sequences during model training, which would then not be required. For training datasets with longer sequences, like the imdb dataset, where most batches of reviews will be encoded to length 512, decreasing the max_length can significatly reduce training time while potentially sacrificing predictive performance. Consider tokenizing datasets like imbd, looking at the distribution of token lengths, and testing various max_length settings.
 
 # COMMAND ----------
 
- #**********Model Training**********
+#**********Model Training**********
   
-tokenizer = AutoTokenizer.from_pretrained(model_type)
+tokenizer = AutoTokenizer.from_pretrained(model_type, use_fast=True)
 
 model_config = AutoConfig.from_pretrained(model_type, 
                                           num_labels = model_args['num_labels'],
@@ -183,16 +202,22 @@ model_config = AutoConfig.from_pretrained(model_type,
                                           label2id =   label2id,
                                           problem_type = model_args['problem_type'])
 
+
 def tokenize(batch):
   """Tokenize input text in batches"""
 
   return tokenizer(batch[model_args['feature_col']], 
-                   padding =    tokenizer_args['padding'], 
-                   truncation = tokenizer_args['truncation'], 
-                   max_length = tokenizer_args['max_token_length'])
+                   truncation = tokenizer_args['truncation'],
+                   # The maximum length of squences accepted by the transformer models
+                   # in the dropdown list
+                   max_length = model_args['max_length'])
+  
+  
+data_collator = DataCollatorWithPadding(tokenizer, padding=True)
 
-
-train_test_tokenized = train_test.map(tokenize, batched=True, batch_size=tokenizer_args['tokenizer_batch_size']) 
+# The default batch size is 1,000; this can be changed by setting 'batch_size=' parameter
+# https://huggingface.co/docs/datasets/process#batch-processing
+train_test_tokenized = train_test.map(tokenize, batched=True) 
 train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset == "tweet_emotions" else 'label'])
 
 
@@ -205,6 +230,7 @@ def model_init():
   return AutoModelForSequenceClassification.from_pretrained(model_type, 
                                                             config = model_config).to(device)
 
+  
 
 def compute_single_label_metrics(pred: EvalPrediction) -> dict[str: float]:
   """Calculate validation statistics for insgle label classification
@@ -252,13 +278,15 @@ trainer = Trainer(model_init =      model_init,
                   args =            TrainingArguments(**training_args),
                   train_dataset =   train_test_tokenized['train'],
                   eval_dataset =    train_test_tokenized['test'],
-                  compute_metrics = compute_multi_label_metrics if model_args['problem_type'] == "multi_label_classification" else compute_single_label_metrics,
+                  compute_metrics = compute_multi_label_metrics if model_args['problem_type'] == "multi_label_classification" 
+                                                                else compute_single_label_metrics,
+                  data_collator =   data_collator,
                   callbacks =       [early_stopping_callback])
 
-# Time inference
 start_time = perf_counter()
 trainer.train()
 elapsed_minutes = round((perf_counter() - start_time) / 60, 1)
+
 
 # Save trainer and tokenizer to the driver node
 trainer.save_model('/model')
@@ -279,10 +307,10 @@ def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=100
                                   model = model,
                                   tokenizer = tokenizer,
                                   batch_size = model_args['inference_batch_size'],
-                                  padding = tokenizer_args['padding'],
-                                  max_token_length = tokenizer_args['max_token_length'],
                                   device = 0,
-                                  truncation = tokenizer_args['truncation']
+                                  padding = tokenizer_args['padding'],
+                                  truncation = tokenizer_args['truncation'],
+                                  max_length=model_args['max_length']
                                  )
 
     inference_time = perf_counter() - start_time
@@ -290,6 +318,7 @@ def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=100
     inference_times.append(inference_time)
 
   return np.mean(inference_times)
+
 
 #**********MLflow Logging**********
 
@@ -345,10 +374,10 @@ with mlflow.start_run(run_name=model_type) as run:
                "model":     "/model",
                "id2label": '/id2label.pickle'}
 
-  pipeline_model = MLflowModel(max_token_length =         tokenizer_args['max_token_length'], 
-                               inference_batch_size =     model_args['inference_batch_size'], 
+  pipeline_model = MLflowModel(inference_batch_size =     model_args['inference_batch_size'], 
                                truncation =               tokenizer_args['truncation'],
-                               padding =                  tokenizer_args['padding'])
+                               padding =                  tokenizer_args['padding'],
+                               max_length =               model_args['max_length'])
 
   mlflow.pyfunc.log_model(artifact_path = "mlflow", 
                           python_model =  pipeline_model, 
