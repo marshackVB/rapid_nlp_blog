@@ -74,8 +74,8 @@ def dataset_to_dataframes(dataset_name:str):
     train_pd = train_pd.sample(frac=1).reset_index(drop=True)
     test_pd = test_pd.sample(frac=1).reset_index(drop=True)
 
-    train = spark.createDataFrame(train_pd, single_label_schema)
-    test = spark.createDataFrame(test_pd,   single_label_schema)
+    train = spark.createDataFrame(train_pd, schema=single_label_schema)
+    test = spark.createDataFrame(test_pd,   schema=single_label_schema)
 
     idx_and_labels = dataset['train'].features['label'].names
     
@@ -149,7 +149,8 @@ print(f"train_cnt: {banking77_train_df.count()}, test_cnt: {banking77_test_df.co
 
 # COMMAND ----------
 
-# MAGIC %md ##### Distribution of token lengths
+# MAGIC %md ##### Distribution of token lengths  
+# MAGIC Note that this simple chart that counts the individual tokens when a text observation is split on whitespace is not sufficient for making decisions about the maximum sequence length when tokenizing the dataset. This is because the transformer tokenizer will split the data differently and will likely split individual words into multiple tokens. This will result in longer token lengths compared to what the chart indicates below.
 
 # COMMAND ----------
 
