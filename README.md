@@ -44,13 +44,18 @@ To get started training these models in your own Workspace, simply follow the be
     <p align="left">
     <font size=2><i>Comparing transformer model runs in MLflow; notice the wide variation in model size and time taken to score 1,000 records</i></font>
     </p>
-
-
+    
  5. To leverage a trained model for inference, copy the **Run ID** of a model located in its Experiment run. Paste the ID in the text box at the top of the **inference** notebook, or, run the inference notebook as a Job and paste the Run ID as a parameter. The inference job is also intended to be run on a GPU-backed single-node cluster. The notebook will generate predictions for both the training and testing sets used to fit the model; it will then write these results to a new Delta table.
 
     
     <img src="img/predictions.png" alt="Comapring MLflow models" style="height: 225px; width:775px;"/>
     <p align="left">
     <font size=2><i>Model predictions example for banking77 dataset</i></font>
+    </p>
+    
+ 6. Experiment with different training configurations for a model as outlined in the [transformers documentation](https://huggingface.co/docs/transformers/performance). Configurations and the type of GPU can lead to large differences in training times.
+    <img src="img/training_experiments.png" alt="Concurrent job runs" style="height: 525px; width:925px;"/>
+    <p align="left">
+    <font size=2><i>Training a single epoch using dynamic padding.</i></font>
     </p>
     
