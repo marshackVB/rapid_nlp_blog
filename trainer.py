@@ -8,6 +8,22 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install pynvml
+
+# COMMAND ----------
+
+from pynvml import *
+
+# COMMAND ----------
+
+nvmlInit()
+handle = nvmlDeviceGetHandleByIndex(0)
+
+info = nvmlDeviceGetMemoryInfo(handle)
+info.total
+
+# COMMAND ----------
+
 import pickle
 from pathlib import Path
 from time import perf_counter
@@ -48,6 +64,24 @@ from mlflow_model import MLflowModel, get_predictions
 mlflow.autolog(disable=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# COMMAND ----------
+
+def print_gpu_utilization():
+    nvmlInit()
+    handle = nvmlDeviceGetHandleByIndex(0)
+    info = nvmlDeviceGetMemoryInfo(handle)
+    print(f"GPU memory occupied: {info.used//1024**2} MB.")
+
+
+def print_summary(result):
+    print(f"Time: {result.metrics['train_runtime']:.2f}")
+    print(f"Samples/second: {result.metrics['train_samples_per_second']:.2f}")
+    print_gpu_utilization()
+
+# COMMAND ----------
+
+print_gpu_utilization()
 
 # COMMAND ----------
 
@@ -123,12 +157,14 @@ data_args = datasets_mapping[dataset]
 model_args =     {"feature_col":              "text",
                   "num_labels":               data_args["num_labels"],
                   "inference_batch_size":     data_args["inference_batch_size"],
-                  "problem_type":             data_args["problem_type"],
-                  "max_length":               512}
+                  "problem_type":             data_args["problem_type"]}
 
 tokenizer_args =  {"tokenizer_batch_size":  batch_size,
                    "truncation":            True,
-                   "padding":               True}
+                   "padding":               False,
+                   # 512 is the max length accepted by the models
+                   "max_length":            512,
+                   "dynamic_padding":       True}
 
 current_user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get().split('@')[0]
 
@@ -137,7 +173,7 @@ training_args =   {"output_dir":                  f'/Users/{current_user}/Docume
                    "per_device_train_batch_size": data_args["per_device_train_batch_size"],
                    "per_device_eval_batch_size":  data_args["per_device_eval_batch_size"],
                    "weight_decay":                0.01,
-                   "num_train_epochs":            10,
+                   "num_train_epochs":            1,
                    "save_strategy":               "epoch", 
                    "evaluation_strategy":         "epoch",
                    "load_best_model_at_end":      True,
@@ -145,7 +181,9 @@ training_args =   {"output_dir":                  f'/Users/{current_user}/Docume
                    "metric_for_best_model":       "f1",
                    "greater_is_better":           True,
                    "seed":                        123,
-                   "report_to":                   'none'}
+                   "report_to":                   'none',
+                   "fp16":                         True,
+                   "group_by_length":              True}
 
 # COMMAND ----------
 
@@ -207,10 +245,11 @@ def tokenize(batch):
   """Tokenize input text in batches"""
 
   return tokenizer(batch[model_args['feature_col']], 
+                   padding = tokenizer_args['padding'],
                    truncation = tokenizer_args['truncation'],
                    # The maximum length of squences accepted by the transformer models
                    # in the dropdown list
-                   max_length = model_args['max_length'])
+                   max_length = tokenizer_args['max_length'])
   
   
 data_collator = DataCollatorWithPadding(tokenizer, padding=True)
@@ -270,29 +309,8 @@ def compute_multi_label_metrics(pred: EvalPrediction) -> dict[str: float]:
       'precision': precision,
       'recall': recall
           }
-
-# The early stopping threshold is in nominal unites; it is not a percentage improvement.
-early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=1, early_stopping_threshold=0.005)
-
-trainer = Trainer(model_init =      model_init,
-                  args =            TrainingArguments(**training_args),
-                  train_dataset =   train_test_tokenized['train'],
-                  eval_dataset =    train_test_tokenized['test'],
-                  compute_metrics = compute_multi_label_metrics if model_args['problem_type'] == "multi_label_classification" 
-                                                                else compute_single_label_metrics,
-                  data_collator =   data_collator,
-                  callbacks =       [early_stopping_callback])
-
-start_time = perf_counter()
-trainer.train()
-elapsed_minutes = round((perf_counter() - start_time) / 60, 1)
-
-
-# Save trainer and tokenizer to the driver node
-trainer.save_model('/model')
-tokenizer.save_pretrained('/tokenizer')
-
-
+  
+  
 def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=1000, iterations:int=3):
   """Measure inference latency give a sample of records. Perform inference 
   multiple times and return the mean inference time"""
@@ -310,7 +328,7 @@ def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=100
                                   device = 0,
                                   padding = tokenizer_args['padding'],
                                   truncation = tokenizer_args['truncation'],
-                                  max_length=model_args['max_length']
+                                  max_length=tokenizer_args['max_length']
                                  )
 
     inference_time = perf_counter() - start_time
@@ -319,13 +337,33 @@ def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=100
 
   return np.mean(inference_times)
 
+# The early stopping threshold is in nominal unites; it is not a percentage improvement.
+early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=1, early_stopping_threshold=0.005)
 
-#**********MLflow Logging**********
+trainer = Trainer(model_init =      model_init,
+                  args =            TrainingArguments(**training_args),
+                  train_dataset =   train_test_tokenized['train'],
+                  eval_dataset =    train_test_tokenized['test'],
+                  compute_metrics = compute_multi_label_metrics if model_args['problem_type'] == "multi_label_classification" 
+                                                                else compute_single_label_metrics,
+                  data_collator =   data_collator,
+                  callbacks =       [early_stopping_callback])
+
 
 with mlflow.start_run(run_name=model_type) as run:
-
+  
+  mlflow.set_tag('experiment', True)
   run_id = run.info.run_id
+  
+  start_time = perf_counter()
+  trainer.train()
+  elapsed_minutes = round((perf_counter() - start_time) / 60, 1)
 
+
+  # Save trainer and tokenizer to the driver node
+  trainer.save_model('/model')
+  tokenizer.save_pretrained('/tokenizer')
+  
   best_metrics = get_best_metrics(trainer)
 
   inference_test_size = 1000
@@ -377,12 +415,15 @@ with mlflow.start_run(run_name=model_type) as run:
   pipeline_model = MLflowModel(inference_batch_size =     model_args['inference_batch_size'], 
                                truncation =               tokenizer_args['truncation'],
                                padding =                  tokenizer_args['padding'],
-                               max_length =               model_args['max_length'])
+                               max_length =               tokenizer_args['max_length'])
 
   mlflow.pyfunc.log_model(artifact_path = "mlflow", 
                           python_model =  pipeline_model, 
                           conda_env =     model_env,
                           artifacts =     artifacts)
+  
+  
+  mlflow.set_tag('gpu_type', 'V100')
   
 print(f"""
         MLflow Experiment run id: {run_id}

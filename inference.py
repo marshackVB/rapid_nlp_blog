@@ -10,6 +10,7 @@
 
 import pickle
 from itertools import chain
+from time import perf_counter
 import numpy as np
 import pandas as pd
 import mlflow
@@ -141,9 +142,11 @@ id2label = pickle.load(open("/mlflow/artifacts/id2label.pickle", "rb"))
 loaded_model = mlflow.pyfunc.load_model(f"runs:/{production_run_id}/mlflow")
 
 # Combine input texts and predictions
+start_time = perf_counter()
 predictions = pd.concat([inference_pd, 
                          pd.DataFrame({"probabilities": loaded_model.predict(inference_pd[["text"]]).tolist()})], 
                          axis=1)
+inference_time = perf_counter() - start_time
 
 # Transform predictions and specify Spark DataFrame schema
 schema = StructType()
