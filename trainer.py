@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md ## Model training workflow  
-# MAGIC This notebook trains transformers models on various datasets. See the drop down menue above for the list of support models and training datasets.
+# MAGIC This notebook trains transformers models on various datasets. Select a model and training dataset from the above Notebook Widgets and experiment with different training parameters. See the below cells for guidance on model tuning. This notebook is intended to be run using either interactively or as a job. The cluster type should be a single-node cluster using the ML GPU Runtime and a GPU-backed instance type.
 
 # COMMAND ----------
 
@@ -41,7 +41,7 @@ from pyspark.sql.types import (StructType,
                                IntegerType)
 
 from pyspark.sql.functions import struct
-from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_run_id
+from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_run_id, get_gpu_utilization
 
 from mlflow_model import MLflowModel, get_predictions
 
@@ -51,7 +51,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # COMMAND ----------
 
-# MAGIC %md ##### Specify databricks widget values
+# MAGIC %md ##### View GPU memory availability and current consumpion  
+# MAGIC Clear the GPU memory between model runs by re-running the cell that pip installs dependencies from the requirements.txt file. Selecting Detach & Re-attach from the cluster icon will also clear the GPU memory.
+
+# COMMAND ----------
+
+get_gpu_utilization(memory_type='total')
+get_gpu_utilization(memory_type='used')
+get_gpu_utilization(memory_type='free')
+
+# COMMAND ----------
+
+# MAGIC %md ##### Specify widget values
 
 # COMMAND ----------
 
@@ -70,30 +81,60 @@ supported_models = ["distilbert-base-uncased",
 dbutils.widgets.dropdown("dataset_name", datasets[0], datasets)
 dbutils.widgets.dropdown("model_type", supported_models[0], supported_models)
 
+dbutils.widgets.text("train_batch_size", "64")
+dbutils.widgets.text("inference_batch_size", "128")
+
+dbutils.widgets.text("gradient_accumulation_steps", "1")
+dbutils.widgets.text("max_epochs", "10")
+dbutils.widgets.dropdown("fp16", "True", ["True", "False"])
+dbutils.widgets.dropdown("group_by_length", "False", ["True", "False"])
+
+
 dataset = dbutils.widgets.get("dataset_name")
 model_type = dbutils.widgets.get("model_type")
+train_batch_size = int(dbutils.widgets.get("train_batch_size"))
+inference_batch_size = int(dbutils.widgets.get("inference_batch_size"))
+gradient_accumulation_steps = int(dbutils.widgets.get("gradient_accumulation_steps"))
+max_epochs = int(dbutils.widgets.get("max_epochs"))
+fp16 = True if dbutils.widgets.get("fp16") == "True" else False
+group_by_length = True if dbutils.widgets.get("group_by_length") == "True" else False
 
-print(dataset, model_type)
+print(f"""
+      Widget parameter values:
+      
+      dataset: {dataset}
+      model: {model_type}
+      train_batch_size: {train_batch_size}
+      inference_batch_size: {inference_batch_size}
+      gradient_accumulation_steps: {gradient_accumulation_steps}
+      fp16: {fp16}
+      group_by_length: {group_by_length}
+      max_epochs: {max_epochs}""")
 
 # COMMAND ----------
 
-# MAGIC %md ##### Specify model, tokenizer, and training parameters 
+# MAGIC %md ##### Specify model, tokenizer, and training parameters  
+# MAGIC 
+# MAGIC See the [documentation](https://huggingface.co/docs/transformers/performance) and specifically the section on [single GPU training](https://huggingface.co/docs/transformers/perf_train_gpu_one) for performance tuning tips. Additionally, see the various [tokenization strategies](https://huggingface.co/docs/transformers/pad_truncation) available.
+# MAGIC 
+# MAGIC Adjusting the below training arguments can have a large effect on training times and GPU memory consumption. This is especially necessary when using larger models and datasets with longer sequences, such as the IMDB dataset.    
+# MAGIC 
+# MAGIC  - per_device_train_batch_size
+# MAGIC  - fp16  
+# MAGIC  - gradient_accumulation_steps. 
+# MAGIC  - group_by_length
+# MAGIC 
+# MAGIC In addition, truncating longer sequences to shorter length will speed training time and reduce GPU memory consumption. This can be accomplished by adjusting the tokenizer such that "max_length" is less than 512 and "truncation = 'max_length'".
 
 # COMMAND ----------
-
-# Experience with different batch sizes; if you run into GPU memory issues,
-# reduce the batch size. The sequence length for the imdb dataset is 
-# considerably larger than the others, so the batch size is reduced.
-batch_size = 16 if dataset == 'imdb' else 64
-inference_batch_size = 256
 
 datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                  "test": "default.banking77_test",
                                  "labels": "default.banking77_labels",
                                  "num_labels": 77,
                                  "inference_batch_size": inference_batch_size,
-                                 "per_device_train_batch_size": batch_size,
-                                 "per_device_eval_batch_size": batch_size,
+                                 "per_device_train_batch_size": train_batch_size,
+                                 "per_device_eval_batch_size": inference_batch_size,
                                  "problem_type": "single_label_classification" 
                                  },
                   
@@ -102,8 +143,8 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                             "labels": "default.imdb_labels",
                             "num_labels": 2,
                             "inference_batch_size": inference_batch_size,
-                            "per_device_train_batch_size": batch_size,
-                            "per_device_eval_batch_size": batch_size,
+                            "per_device_train_batch_size": train_batch_size,
+                            "per_device_eval_batch_size": inference_batch_size,
                             "problem_type": "single_label_classification"
                            },
                     
@@ -112,8 +153,8 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                        "labels": "default.tweet_emotions_labels",
                                        "num_labels": 11,
                                        "inference_batch_size": inference_batch_size,
-                                       "per_device_train_batch_size":batch_size,
-                                       "per_device_eval_batch_size": batch_size,
+                                       "per_device_train_batch_size":train_batch_size,
+                                       "per_device_eval_batch_size": inference_batch_size,
                                        "problem_type": "multi_label_classification"
                                }
                    }
@@ -123,29 +164,36 @@ data_args = datasets_mapping[dataset]
 model_args =     {"feature_col":              "text",
                   "num_labels":               data_args["num_labels"],
                   "inference_batch_size":     data_args["inference_batch_size"],
-                  "problem_type":             data_args["problem_type"],
-                  "max_length":               512}
+                  "problem_type":             data_args["problem_type"]}
 
-tokenizer_args =  {"tokenizer_batch_size":  batch_size,
-                   "truncation":            True,
-                   "padding":               True}
+tokenizer_args =  {"truncation":            True,
+                   # Padding will be done at the batch level during training
+                   "padding":               False,
+                   # 512 is the max length accepted by the models
+                   "max_length":            512}
 
 current_user = dbutils.notebook.entry_point.getDbutils().notebook().getContext().userName().get().split('@')[0]
 
-training_args =   {"output_dir":                  f'/Users/{current_user}/Documents/huggingface/results',
+training_args =   {"output_dir":                  '/checkpoints',
                    "overwrite_output_dir":        True,
                    "per_device_train_batch_size": data_args["per_device_train_batch_size"],
                    "per_device_eval_batch_size":  data_args["per_device_eval_batch_size"],
                    "weight_decay":                0.01,
-                   "num_train_epochs":            10,
+                   "num_train_epochs":            max_epochs,
                    "save_strategy":               "epoch", 
                    "evaluation_strategy":         "epoch",
+                   "logging_strategy":            "epoch",
                    "load_best_model_at_end":      True,
                    "save_total_limit":            2,
                    "metric_for_best_model":       "f1",
                    "greater_is_better":           True,
                    "seed":                        123,
-                   "report_to":                   'none'}
+                   "report_to":                   'none',
+                   # See the docs: https://huggingface.co/docs/transformers/perf_train_gpu_one#gradient-checkpointing
+                  # See the docs: https://huggingface.co/docs/transformers/perf_train_gpu_one#gradient-accumulation
+                   "gradient_accumulation_steps": gradient_accumulation_steps,
+                   "fp16":                        fp16,
+                   "group_by_length":             group_by_length}
 
 # COMMAND ----------
 
@@ -177,23 +225,19 @@ label2id = {row.label: row.idx for row in collected_labels}
 
 # COMMAND ----------
 
-# MAGIC %md ##### Create an MLflow Experiment or use existing Experiment
+# MAGIC %md ##### Create an MLflow Experiment or use an existing Experiment
 
 # COMMAND ----------
 
-experiment_location =  "/Shared/transformer_experiments"
+experiment_location =  "/Shared/transformer_single_model_comparison"
 get_or_create_experiment(experiment_location)
 
 # COMMAND ----------
 
 # MAGIC %md ##### Train models and log to MLflow  
-# MAGIC 
-# MAGIC Regarding tokenization, [various strategies](https://huggingface.co/docs/transformers/pad_truncation) can be used to truncate and pad sequences. In this example, sequences are truncated to the model's maximum accepted length, then, during model training, the sequences in each batch are padded to the longest sequence within the batch. For instance, if one batch of 16 observations has a single record with tokenized length of 512, all other records in that batch will be padded to length 512. You can optionally truncate sequences to a size less than the model's maximum accepted sequence length by setting "max_length < 512" and setting "truncation = 'max_length'". You could then remove the [DataCollatorWithPadding](https://www.youtube.com/watch?v=-RPeakdlHYo) object from the Trainer's arguments; the collator is responsible for padding sequences during model training, which would then not be required. For training datasets with longer sequences, like the imdb dataset, where most batches of reviews will be encoded to length 512, decreasing the max_length can significatly reduce training time while potentially sacrificing predictive performance. Consider tokenizing datasets like imbd, looking at the distribution of token lengths, and testing various max_length settings.
 
 # COMMAND ----------
 
-#**********Model Training**********
-  
 tokenizer = AutoTokenizer.from_pretrained(model_type, use_fast=True)
 
 model_config = AutoConfig.from_pretrained(model_type, 
@@ -208,11 +252,14 @@ def tokenize(batch):
 
   return tokenizer(batch[model_args['feature_col']], 
                    truncation = tokenizer_args['truncation'],
+                   padding = tokenizer_args['padding'],
                    # The maximum length of squences accepted by the transformer models
                    # in the dropdown list
-                   max_length = model_args['max_length'])
+                   max_length = tokenizer_args['max_length'])
   
   
+# The DataCollator will handle dynamic padding of batches during training. See the documentation, 
+# https://www.youtube.com/watch?v=-RPeakdlHYo. If not leverating dynamic padding, this can be removed
 data_collator = DataCollatorWithPadding(tokenizer, padding=True)
 
 # The default batch size is 1,000; this can be changed by setting 'batch_size=' parameter
@@ -249,7 +296,7 @@ def compute_single_label_metrics(pred: EvalPrediction) -> dict[str: float]:
       'precision': precision,
       'recall': recall
           }
-  
+
   
 def compute_multi_label_metrics(pred: EvalPrediction) -> dict[str: float]:
   
@@ -270,8 +317,8 @@ def compute_multi_label_metrics(pred: EvalPrediction) -> dict[str: float]:
       'precision': precision,
       'recall': recall
           }
-
-# The early stopping threshold is in nominal unites; it is not a percentage improvement.
+  
+# The early stopping threshold is in units; it is not a percentage.
 early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=1, early_stopping_threshold=0.005)
 
 trainer = Trainer(model_init =      model_init,
@@ -283,65 +330,36 @@ trainer = Trainer(model_init =      model_init,
                   data_collator =   data_collator,
                   callbacks =       [early_stopping_callback])
 
-start_time = perf_counter()
-trainer.train()
-elapsed_minutes = round((perf_counter() - start_time) / 60, 1)
-
-
-# Save trainer and tokenizer to the driver node
-trainer.save_model('/model')
-tokenizer.save_pretrained('/tokenizer')
-
-
-def time_inference(tokenizer:AutoTokenizer, model:AutoModel, sample_size:int=1000, iterations:int=3):
-  """Measure inference latency give a sample of records. Perform inference 
-  multiple times and return the mean inference time"""
-
-  inference_times = []
-
-  for _ in range(iterations):
-
-    start_time = perf_counter()
-
-    predictions = get_predictions(data = train_test['train']['text'][:sample_size],
-                                  model = model,
-                                  tokenizer = tokenizer,
-                                  batch_size = model_args['inference_batch_size'],
-                                  device = 0,
-                                  padding = tokenizer_args['padding'],
-                                  truncation = tokenizer_args['truncation'],
-                                  max_length=model_args['max_length']
-                                 )
-
-    inference_time = perf_counter() - start_time
-
-    inference_times.append(inference_time)
-
-  return np.mean(inference_times)
-
-
-#**********MLflow Logging**********
 
 with mlflow.start_run(run_name=model_type) as run:
-
+  
   run_id = run.info.run_id
+  
+  result = trainer.train()
+
+  # Save trainer and tokenizer to the driver node
+  trainer.save_model('/model')
+  tokenizer.save_pretrained('/tokenizer')
+  
+  eval_result = trainer.evaluate()
 
   best_metrics = get_best_metrics(trainer)
 
-  inference_test_size = 1000
-  
-  inference_time_gpu = time_inference(tokenizer = tokenizer,
-                                      model = trainer.model,
-                                      sample_size = inference_test_size)
+  # Add GPU memory available, GPU memory used, % memory utilized
+  training_eval_metrics = {'model_size_mb': round(Path('/model/pytorch_model.bin').stat().st_size / (1024 * 1024), 1),
+                           'train_minutes': round(result.metrics['train_runtime'] / 60, 2),
+                           'train_samples_per_second': round(result.metrics['train_samples_per_second'], 1),
+                           'train_steps_per_second': round(result.metrics['train_steps_per_second'], 2),
+                           'train_rows': train_test['train'].num_rows,
+                           'gpu_memory_total_mb': get_gpu_utilization(memory_type='total', print_only=False),
+                           'gpu_memory_used_mb': get_gpu_utilization(memory_type='used', print_only=False),
 
-  model_size_mb = round(Path('/model/pytorch_model.bin').stat().st_size / (1024 * 1024), 1)
+                           'eval_seconds': round(eval_result['eval_runtime'], 2),
+                           'eval_samples_per_second': round(eval_result['eval_samples_per_second'], 1),
+                           'eval_steps_per_second': round(eval_result['eval_steps_per_second'], 1),
+                           'eval_rows': train_test['test'].num_rows}
 
-  training_metrics = {'model_size_mb': model_size_mb,
-                      'total_train_minutes': elapsed_minutes,
-                      'train_minutes_per_epoch': round(elapsed_minutes / trainer.state.epoch, 1),
-                      f'inference_gpu_seconds_{inference_test_size}': round(inference_time_gpu, 1)}
-
-  all_metrics = dict(**best_metrics, **training_metrics)
+  all_metrics = dict(**best_metrics, **training_eval_metrics)
   mlflow.log_metrics(all_metrics)
 
   python_version = "{major}.{minor}.{micro}".format(major=version_info.major,
@@ -358,6 +376,7 @@ with mlflow.start_run(run_name=model_type) as run:
 
   mlflow.log_params(all_params)
 
+  # Construct environment file based on requirements.txt doc
   with open('requirements.txt', 'r') as additional_requirements:
     libraries = additional_requirements.readlines()
     libraries = [library.rstrip() for library in libraries]
@@ -374,10 +393,12 @@ with mlflow.start_run(run_name=model_type) as run:
                "model":     "/model",
                "id2label": '/id2label.pickle'}
 
+  # Create instance of customer MLflow model for inference
   pipeline_model = MLflowModel(inference_batch_size =     model_args['inference_batch_size'], 
                                truncation =               tokenizer_args['truncation'],
-                               padding =                  tokenizer_args['padding'],
-                               max_length =               model_args['max_length'])
+                               # Pad to the longest sequence in the batch during inference
+                               padding =                  'longest',
+                               max_length =               tokenizer_args['max_length'])
 
   mlflow.pyfunc.log_model(artifact_path = "mlflow", 
                           python_model =  pipeline_model, 
@@ -387,3 +408,13 @@ with mlflow.start_run(run_name=model_type) as run:
 print(f"""
         MLflow Experiment run id: {run_id}
        """)
+
+# COMMAND ----------
+
+# MAGIC %md ##### View GPU memory availability and current consumpion  
+
+# COMMAND ----------
+
+get_gpu_utilization(memory_type='total')
+get_gpu_utilization(memory_type='used')
+get_gpu_utilization(memory_type='free')

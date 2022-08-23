@@ -5,3 +5,4 @@ torch==1.11.0+cu113
 transformers==4.21.*
 datasets==2.4.*
 mlflow == 1.27.*
+nvidia-ml-py3

@@ -4,6 +4,7 @@ from argparse import Namespace
 from typing import List, Tuple, Dict
 from pyspark.sql import SparkSession
 from pyspark.dbutils import DBUtils
+from pynvml import *
 import mlflow
 from mlflow.tracking import MlflowClient
 
@@ -44,7 +45,7 @@ def get_best_metrics(trainer) -> Dict[str, float]:
     trainer: A Trainer instance that has been trained on data.
    
   Returns:
-    A dictionary of metrics and their values.
+    A dictionary of metrics and their values for the best training epoch.
   """
 
   # Best model metrics
@@ -53,24 +54,20 @@ def get_best_metrics(trainer) -> Dict[str, float]:
   with open(best_checkpoint) as f:
     metrics = json.load(f)
 
-  best_step = metrics['global_step']
+  best_epoch = round(metrics['epoch'], 1)
+  
+  # These are instead sourced from calling training.evaluate()
+  metrics_to_drop = ['eval_runtime', 'eval_samples_per_second', 'eval_steps_per_second', 'step']
+  
+  best_loss_metrics, best_eval_metrics = [eval_metrics for eval_metrics in metrics['log_history'] if round(eval_metrics['epoch'], 1) == best_epoch]
+  best_eval_metrics = {metric_name: round(metric_value, 4) for metric_name, metric_value in best_eval_metrics.items() if metric_name not in metrics_to_drop}
 
-  all_log_history = enumerate(metrics['log_history'])
+  best_metrics = {**best_loss_metrics, **best_eval_metrics}
 
-  best_log_idx = [idx for idx, values in all_log_history if values['step'] == best_step][0]
+  best_metrics['best_model_epoch'] = round(best_metrics.pop('epoch'), 1)
+  
 
-  best_log = metrics['log_history'][best_log_idx]
-  best_log['best_model_epoch'] = best_log.pop('epoch')
-  #best_log.pop('epoch')
-
-  # Overal runtime metrics
-  runtime_logs_idx = [idx for idx, values in enumerate(trainer.state.log_history) if values.get('train_runtime') is not None][0]
-  runtime_logs = trainer.state.log_history[runtime_logs_idx]
-
-  best_log['train_runtime'] = runtime_logs['train_runtime']
-  best_log['train_loss'] = runtime_logs['train_loss']
-
-  return best_log
+  return best_metrics
 
       
 def get_or_create_experiment(experiment_location: str) -> None:
@@ -136,3 +133,29 @@ def get_artifact_path(model_name:str, stage:str='Production') -> str:
   artifact_path = ('/').join(drop_last_dir)
   
   return artifact_path
+
+
+def get_gpu_utilization(memory_type='used', print_only=True):
+    """Print GPU memory utililizaiton
+    https://huggingface.co/docs/transformers/perf_train_gpu_one#efficient-training-on-a-single-gpu
+    """
+    
+    nvmlInit()
+    handle = nvmlDeviceGetHandleByIndex(0)
+    info = nvmlDeviceGetMemoryInfo(handle)
+    
+    if memory_type == 'total':
+      return_value = info.total//1024**2
+      return_string = f'GPU memory total: {return_value} MB.'
+    elif memory_type == 'free':
+      return_value = info.free//1024**2
+      return_string = f'GPU memory free: {return_value} MB.'
+    elif memory_type == 'used':
+      return_value = info.used//1024**2
+      return_string = f'GPU memory used: {return_value} MB.'
+      
+    if print_only:
+      print(return_string)
+    else:
+      return return_value
+    
