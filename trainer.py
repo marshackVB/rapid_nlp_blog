@@ -89,15 +89,20 @@ dbutils.widgets.text("max_epochs", "10")
 dbutils.widgets.dropdown("fp16", "True", ["True", "False"])
 dbutils.widgets.dropdown("group_by_length", "False", ["True", "False"])
 
+dbutils.widgets.text("experiment_location", "transformer_experiments")
+
 
 dataset = dbutils.widgets.get("dataset_name")
 model_type = dbutils.widgets.get("model_type")
 train_batch_size = int(dbutils.widgets.get("train_batch_size"))
+
 inference_batch_size = int(dbutils.widgets.get("inference_batch_size"))
 gradient_accumulation_steps = int(dbutils.widgets.get("gradient_accumulation_steps"))
 max_epochs = int(dbutils.widgets.get("max_epochs"))
+
 fp16 = True if dbutils.widgets.get("fp16") == "True" else False
 group_by_length = True if dbutils.widgets.get("group_by_length") == "True" else False
+experiment_location = dbutils.widgets.get("experiment_location")
 
 print(f"""
       Widget parameter values:
@@ -109,7 +114,8 @@ print(f"""
       gradient_accumulation_steps: {gradient_accumulation_steps}
       fp16: {fp16}
       group_by_length: {group_by_length}
-      max_epochs: {max_epochs}""")
+      max_epochs: {max_epochs}
+      experiment_location: {experiment_location}""")
 
 # COMMAND ----------
 
@@ -132,7 +138,9 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                  "test": "default.banking77_test",
                                  "labels": "default.banking77_labels",
                                  "num_labels": 77,
+                                  # Batch size for general model inference, outside of the training loop
                                  "inference_batch_size": inference_batch_size,
+                                 # Batch size for evaluation step of model training
                                  "per_device_train_batch_size": train_batch_size,
                                  "per_device_eval_batch_size": inference_batch_size,
                                  "problem_type": "single_label_classification" 
@@ -229,7 +237,7 @@ label2id = {row.label: row.idx for row in collected_labels}
 
 # COMMAND ----------
 
-experiment_location =  "/Shared/transformer_single_model_comparison"
+experiment_location =  f"/Shared/{experiment_location}"
 get_or_create_experiment(experiment_location)
 
 # COMMAND ----------
@@ -345,7 +353,6 @@ with mlflow.start_run(run_name=model_type) as run:
 
   best_metrics = get_best_metrics(trainer)
 
-  # Add GPU memory available, GPU memory used, % memory utilized
   training_eval_metrics = {'model_size_mb': round(Path('/model/pytorch_model.bin').stat().st_size / (1024 * 1024), 1),
                            'train_minutes': round(result.metrics['train_runtime'] / 60, 2),
                            'train_samples_per_second': round(result.metrics['train_samples_per_second'], 1),
