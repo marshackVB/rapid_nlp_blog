@@ -1,6 +1,8 @@
 # Databricks notebook source
 # MAGIC %md ## Model training workflow  
-# MAGIC This notebook trains transformers models on various datasets. Select a model and training dataset from the above Notebook Widgets and experiment with different training parameters. See the below cells for guidance on model tuning. This notebook is intended to be run using either interactively or as a job. The cluster type should be a single-node cluster using the ML GPU Runtime and a GPU-backed instance type.
+# MAGIC This notebook trains transformer models on various datasets. Select a model and training dataset from the above drop-down menus and experiment with different training parameters. See the below cells for guidance on model tuning. This notebook can be run either interactively or as a job. The cluster type should be a single-node cluster using the ML GPU Runtime and a GPU-backed instance type.  
+# MAGIC 
+# MAGIC Note that the IMDB dataset has much longer sequence lengths than the other example datasets. It takes longer to train and is more susceptible to GPU out of memory errors. Consider decreasing the train_batch_size and eval_batch_size to 16 and increasing gradient_accumulation_steps to 4 as a starting point for this dataset. You can also experiment with truncating the sequences to a length below the default, 512. This will speed training and allow for larger batch sizes, potentially at some degradation in predictive performance.
 
 # COMMAND ----------
 
@@ -10,40 +12,24 @@
 
 import pickle
 from pathlib import Path
-from time import perf_counter
 from sys import version_info
 import numpy as np
-import pandas as pd
 import torch
-import torch.nn as nn
 from datasets import load_dataset, DatasetDict
 from transformers import (AutoConfig,
                           AutoTokenizer, 
-                          AutoModel,
                           AutoModelForSequenceClassification, 
                           EarlyStoppingCallback, 
                           EvalPrediction, 
                           DataCollatorWithPadding,
                           pipeline,
                           TrainingArguments, 
-                          Trainer)
-                          
+                          Trainer)                   
 from sklearn.metrics import precision_recall_fscore_support
 from scipy.stats import logistic
 import mlflow
-from mlflow.tracking import MlflowClient
-from mlflow.types import ColSpec, DataType, Schema
-from pyspark.sql.types import (StructType, 
-                               StructField, 
-                               FloatType, 
-                               StringType, 
-                               ArrayType, 
-                               IntegerType)
-
-from pyspark.sql.functions import struct
-from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_run_id, get_gpu_utilization
-
-from mlflow_model import MLflowModel, get_predictions
+from utils import get_parquet_files, get_or_create_experiment, get_best_metrics, get_gpu_utilization
+from mlflow_model import MLflowModel
 
 mlflow.autolog(disable=True)
 
@@ -51,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # COMMAND ----------
 
-# MAGIC %md ##### View GPU memory availability and current consumpion  
+# MAGIC %md ##### View GPU memory availability and current consumption  
 # MAGIC Clear the GPU memory between model runs by re-running the cell that pip installs dependencies from the requirements.txt file. Selecting Detach & Re-attach from the cluster icon will also clear the GPU memory.
 
 # COMMAND ----------
@@ -82,7 +68,8 @@ dbutils.widgets.dropdown("dataset_name", datasets[0], datasets)
 dbutils.widgets.dropdown("model_type", supported_models[0], supported_models)
 
 dbutils.widgets.text("train_batch_size", "64")
-dbutils.widgets.text("inference_batch_size", "128")
+dbutils.widgets.text("eval_batch_size", "64")
+dbutils.widgets.text("inference_batch_size", "256")
 
 dbutils.widgets.text("gradient_accumulation_steps", "1")
 dbutils.widgets.text("max_epochs", "10")
@@ -94,9 +81,11 @@ dbutils.widgets.text("experiment_location", "transformer_experiments")
 
 dataset = dbutils.widgets.get("dataset_name")
 model_type = dbutils.widgets.get("model_type")
-train_batch_size = int(dbutils.widgets.get("train_batch_size"))
 
+train_batch_size = int(dbutils.widgets.get("train_batch_size"))
+eval_batch_size = int(dbutils.widgets.get("eval_batch_size"))
 inference_batch_size = int(dbutils.widgets.get("inference_batch_size"))
+
 gradient_accumulation_steps = int(dbutils.widgets.get("gradient_accumulation_steps"))
 max_epochs = int(dbutils.widgets.get("max_epochs"))
 
@@ -110,6 +99,7 @@ print(f"""
       dataset: {dataset}
       model: {model_type}
       train_batch_size: {train_batch_size}
+      eval_batch_size: {eval_batch_size}
       inference_batch_size: {inference_batch_size}
       gradient_accumulation_steps: {gradient_accumulation_steps}
       fp16: {fp16}
@@ -123,7 +113,7 @@ print(f"""
 # MAGIC 
 # MAGIC See the [documentation](https://huggingface.co/docs/transformers/performance) and specifically the section on [single GPU training](https://huggingface.co/docs/transformers/perf_train_gpu_one) for performance tuning tips. Additionally, see the various [tokenization strategies](https://huggingface.co/docs/transformers/pad_truncation) available.
 # MAGIC 
-# MAGIC Adjusting the below training arguments can have a large effect on training times and GPU memory consumption. This is especially necessary when using larger models and datasets with longer sequences, such as the IMDB dataset.    
+# MAGIC Adjusting the below training arguments can have a large effect on training times and GPU memory consumption.
 # MAGIC 
 # MAGIC  - per_device_train_batch_size
 # MAGIC  - fp16  
@@ -138,11 +128,12 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                  "test": "default.banking77_test",
                                  "labels": "default.banking77_labels",
                                  "num_labels": 77,
-                                  # Batch size for general model inference, outside of the training loop
+                                  # Batch size for general model inference, outside of the training loop; this is
+                                  # the batch size used by the MLflow model
                                  "inference_batch_size": inference_batch_size,
                                  # Batch size for evaluation step of model training
                                  "per_device_train_batch_size": train_batch_size,
-                                 "per_device_eval_batch_size": inference_batch_size,
+                                 "per_device_eval_batch_size": eval_batch_size,
                                  "problem_type": "single_label_classification" 
                                  },
                   
@@ -162,7 +153,7 @@ datasets_mapping = {"banking77": {"train": "default.banking77_train",
                                        "num_labels": 11,
                                        "inference_batch_size": inference_batch_size,
                                        "per_device_train_batch_size":train_batch_size,
-                                       "per_device_eval_batch_size": inference_batch_size,
+                                       "per_device_eval_batch_size": eval_batch_size,
                                        "problem_type": "multi_label_classification"
                                }
                    }
@@ -197,8 +188,6 @@ training_args =   {"output_dir":                  '/checkpoints',
                    "greater_is_better":           True,
                    "seed":                        123,
                    "report_to":                   'none',
-                   # See the docs: https://huggingface.co/docs/transformers/perf_train_gpu_one#gradient-checkpointing
-                  # See the docs: https://huggingface.co/docs/transformers/perf_train_gpu_one#gradient-accumulation
                    "gradient_accumulation_steps": gradient_accumulation_steps,
                    "fp16":                        fp16,
                    "group_by_length":             group_by_length}
@@ -206,7 +195,7 @@ training_args =   {"output_dir":                  '/checkpoints',
 # COMMAND ----------
 
 # MAGIC %md ##### Create a [huggingface dataset](https://huggingface.co/course/chapter5/4?fw=pt) directly from the Delta tables' underlying parquet files.  
-# MAGIC The hugginface library will copy the training and test datasets to the driver node's disk and leverage [memory mapping](https://huggingface.co/course/chapter5/4?fw=pt) to efficiently read data from disk during training and inference. This prevents larger datasets from overwhelming the memory of your virtual machine.
+# MAGIC The huggingface library will copy the training and test datasets to the driver node's disk and leverage [memory mapping](https://huggingface.co/course/chapter5/4?fw=pt) to efficiently read data from disk during training and inference. This prevents larger datasets from overwhelming the memory of your virtual machine.
 
 # COMMAND ----------
 
@@ -243,6 +232,7 @@ get_or_create_experiment(experiment_location)
 # COMMAND ----------
 
 # MAGIC %md ##### Train models and log to MLflow  
+# MAGIC This cell will generate a hyperlink that navigates to the Experiment run in MLFlow.
 
 # COMMAND ----------
 
@@ -261,16 +251,14 @@ def tokenize(batch):
   return tokenizer(batch[model_args['feature_col']], 
                    truncation = tokenizer_args['truncation'],
                    padding = tokenizer_args['padding'],
-                   # The maximum length of squences accepted by the transformer models
-                   # in the dropdown list
                    max_length = tokenizer_args['max_length'])
   
   
 # The DataCollator will handle dynamic padding of batches during training. See the documentation, 
-# https://www.youtube.com/watch?v=-RPeakdlHYo. If not leverating dynamic padding, this can be removed
+# https://www.youtube.com/watch?v=-RPeakdlHYo. If not leveraging dynamic padding, this can be removed
 data_collator = DataCollatorWithPadding(tokenizer, padding=True)
 
-# The default batch size is 1,000; this can be changed by setting 'batch_size=' parameter
+# The default batch size is 1,000; this can be changed by setting the 'batch_size=' parameter
 # https://huggingface.co/docs/datasets/process#batch-processing
 train_test_tokenized = train_test.map(tokenize, batched=True) 
 train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask', 'labels' if dataset == "tweet_emotions" else 'label'])
@@ -278,8 +266,8 @@ train_test_tokenized.set_format("torch", columns=['input_ids', 'attention_mask',
 
 def model_init():
   """Return a freshly instantiated model. This ensure that the model
-  is trained from scratch, rather than training an previously 
-  instantiated and trained model for additional epochs.
+  is trained from scratch, rather than training a previously 
+  instantiated model for additional epochs.
   """
 
   return AutoModelForSequenceClassification.from_pretrained(model_type, 
@@ -288,8 +276,8 @@ def model_init():
   
 
 def compute_single_label_metrics(pred: EvalPrediction) -> dict[str: float]:
-  """Calculate validation statistics for insgle label classification
-  problems. The function accepcts a transformers EvalPrediction object.
+  """Calculate validation statistics for single label classification
+  problems. The function accepts a transformers EvalPrediction object.
   
   https://huggingface.co/docs/transformers/internal/trainer_utils#transformers.EvalPrediction
   """
@@ -309,7 +297,7 @@ def compute_single_label_metrics(pred: EvalPrediction) -> dict[str: float]:
 def compute_multi_label_metrics(pred: EvalPrediction) -> dict[str: float]:
   
   """Calculate validation statistics for multilabel classification
-  problems. The function accepcts a transformers EvalPrediction object.
+  problems. The function accepts a transformers EvalPrediction object.
   """
   
   labels = pred.label_ids  
@@ -345,7 +333,8 @@ with mlflow.start_run(run_name=model_type) as run:
   
   result = trainer.train()
 
-  # Save trainer and tokenizer to the driver node
+  # Save trainer and tokenizer to the driver node; then will then be stored as
+  # MLflow artifacts
   trainer.save_model('/model')
   tokenizer.save_pretrained('/tokenizer')
   
@@ -418,7 +407,7 @@ print(f"""
 
 # COMMAND ----------
 
-# MAGIC %md ##### View GPU memory availability and current consumpion  
+# MAGIC %md ##### View GPU memory availability and current consumption  
 
 # COMMAND ----------
 

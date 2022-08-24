@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md ## Model inference workflow  
-# MAGIC Given a MLlfow experiment run id, register the associated model with the Model Registry. Transition the model's stage to 'Production'. Lastly, load the model form the Registry, score new recordes, and write predictions to a Delta table
+# MAGIC Paste an MLflow Experiment run id in the above text box and select "Run All" above. This notebook will register the associated model with the Model Registry and transition the model's stage to 'Production'. Then, the model will be loaded and applied for inference, writing predictions to a Delta table.
 
 # COMMAND ----------
 
@@ -9,9 +9,11 @@
 # COMMAND ----------
 
 import pickle
-from itertools import chain
+
+from time import perf_counter
 import numpy as np
 import pandas as pd
+
 import mlflow
 from mlflow.tracking import MlflowClient
 
@@ -21,15 +23,26 @@ from pyspark.sql.types import (StructType,
                                StringType, 
                                FloatType,
                                IntegerType)
-
 from pyspark.sql import DataFrame
 import pyspark.sql.functions as func
-from pyspark.sql.functions import col, create_map, lit
-from utils import get_run_id
+
+from utils import (get_run_id, 
+                   get_gpu_utilization)
 
 pd.set_option('display.max_colwidth', None)
 
 client = MlflowClient()
+
+# COMMAND ----------
+
+# MAGIC %md ##### View GPU memory availability and current consumption
+# MAGIC If GPU memory utilization is high, you may need to Detach & Re-attach the training notebook to clear the GPU's memory. This could occur if you just finished training a model with the current cluster.
+
+# COMMAND ----------
+
+get_gpu_utilization(memory_type='total')
+get_gpu_utilization(memory_type='used')
+get_gpu_utilization(memory_type='free')
 
 # COMMAND ----------
 
@@ -40,6 +53,8 @@ client = MlflowClient()
 dbutils.widgets.text("experiment_run_id", "")
 run_id = dbutils.widgets.get("experiment_run_id").strip()
 
+# COMMAND ----------
+
 try:
   model_info = client.get_run(run_id).to_dictionary()
 except:
@@ -49,7 +64,7 @@ model_info
 
 # COMMAND ----------
 
-# MAGIC %md Create a Model Registry entry if one does not exist
+# MAGIC %md ##### Create a Model Registry entry if one does not exist
 
 # COMMAND ----------
 
@@ -65,7 +80,7 @@ except:
 
 # COMMAND ----------
 
-# MAGIC %md Register the model and transition its stage to 'Production'
+# MAGIC %md ##### Register the model and transition its stage to 'Production'
 
 # COMMAND ----------
 
@@ -86,11 +101,14 @@ promote_to_prod = client.transition_model_version_stage(name=model_registry_name
 
 # COMMAND ----------
 
-# MAGIC %md Create a Pandas DataFrame of records to score. A huggingface Dataset could also be passed to the model and could be sourced directly from the parquet files underlying a Delta table. See the training notebook dataset generation workflow for an example of this technique.
+# MAGIC %md ##### Create a Pandas DataFrame of records to score by combining the training and test datasets used to fine tune the model
 
 # COMMAND ----------
 
 def union_train_test(train_df:DataFrame, test_df:DataFrame) -> DataFrame:
+  """Combine the training and testing datasets
+  """
+  
   return (spark.table(train_df).withColumn("is_train", func.lit(1))
                                .unionAll(
                                  spark.table(test_df).withColumn("is_train", func.lit(0))
@@ -114,17 +132,18 @@ elif training_dataset == 'tweet_emotions':
 else:
   raise Exception(f"Training and testing datasets are not known")
   
+    
 inference_pd = inference_df.toPandas()
 
 print(f"Total records for inference: {inference_pd.iloc[:, 0].count():,}")
 
 # COMMAND ----------
 
-inference_pd.head()
+display(inference_df)
 
 # COMMAND ----------
 
-# MAGIC %md #### Generate predictions and write results to Delta
+# MAGIC %md ##### Generate predictions and write results to Delta
 
 # COMMAND ----------
 
@@ -140,10 +159,14 @@ id2label = pickle.load(open("/mlflow/artifacts/id2label.pickle", "rb"))
 # Load model
 loaded_model = mlflow.pyfunc.load_model(f"runs:/{production_run_id}/mlflow")
 
+# COMMAND ----------
+
 # Combine input texts and predictions
+start_time = perf_counter()
 predictions = pd.concat([inference_pd, 
                          pd.DataFrame({"probabilities": loaded_model.predict(inference_pd[["text"]]).tolist()})], 
                          axis=1)
+inference_time = perf_counter() - start_time
 
 # Transform predictions and specify Spark DataFrame schema
 schema = StructType()
@@ -159,9 +182,10 @@ if training_dataset == 'tweet_emotions':
   schema.add("label_indxs", ArrayType(IntegerType()))
   schema.add("labels", ArrayType(StringType()))
              
+  
   predictions.rename(columns={"labels": "all_label_indxs",
                               "probabilities": "pred_proba_label_indxs"}, inplace = True)
-             
+  
   predictions['predicted_label_indxs'] = predictions.pred_proba_label_indxs.apply(lambda x: np.where(np.array(x) > 0.5)[0].tolist())
   
   predictions['predicted_labels'] = predictions.predicted_label_indxs.apply(lambda x: [id2label[idx] for idx in x])
@@ -200,3 +224,13 @@ spark.sql(f"DROP TABLE IF EXISTS {output_table_name}")
 predictions_spark.write.format("delta").mode("overwrite").saveAsTable(output_table_name)
 
 display(spark.table(output_table_name))
+
+# COMMAND ----------
+
+print(f'Inference seconds: {round(inference_time, 2)}')
+
+# COMMAND ----------
+
+get_gpu_utilization(memory_type='total')
+get_gpu_utilization(memory_type='used')
+get_gpu_utilization(memory_type='free')
