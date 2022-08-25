@@ -1,5 +1,6 @@
 # Databricks notebook source
-# MAGIC %md #### The below cells contain the code snippets using the Databricks blog, Rapid NLP Development with Databricks, Delta, and Transformers
+# MAGIC %md #### The below cells contain the code snippets used in the Databricks blog, Rapid NLP Development with Databricks, Delta, and Transformers.  
+# MAGIC Run this notebook on a GPU-backed cluster to recreate the results
 
 # COMMAND ----------
 
@@ -115,22 +116,6 @@ print(f"\nDimension of a single token embedding\n{int(embedding_dim)}")
 
 # COMMAND ----------
 
-# MAGIC %md Load a BERT model with an attached classification head for binary classification
-
-# COMMAND ----------
-
-from transformers import AutoModelForSequenceClassification
-from transformers import logging
-
-logging.set_verbosity_error()
-
-# The banking77 dataset has 77 possible categories/labels
-sequence_classification_model = AutoModelForSequenceClassification.from_pretrained(model_type, num_labels=77)
-
-sequence_classification_model.classifier
-
-# COMMAND ----------
-
 # MAGIC %md Download a dataset from the huggingface dataset hub and save to Delta
 
 # COMMAND ----------
@@ -146,6 +131,7 @@ train_pd  = dataset['train'].to_pandas()
 test_pd  =  dataset['test'].to_pandas()
 
 idx_and_labels = dataset['train'].features['label'].names
+id2label = {idx: label for idx, label  in enumerate(idx_and_labels)}
 
 # Shuffle the records
 train_pd = train_pd.sample(frac=1).reset_index(drop=True)
@@ -233,6 +219,8 @@ groupby_count.approxQuantile("tokenized_length", list(np.arange(0.1, 1, 0.1)), 0
 
 max_length = 90
 
+tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+
 def tokenize(batch):
 
   return tokenizer(batch['text'], 
@@ -274,7 +262,7 @@ def compute_single_label_metrics(pred):
 
 # COMMAND ----------
 
-from transformers import Trainer, TrainingArguments
+from transformers import Trainer, TrainingArguments, AutoModelForSequenceClassification
 
 # Transformer models should be fine tuned using a GPU-backed instance, 
 # such as a single-node cluster with a GPU-backed virtual machine type.
@@ -282,14 +270,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def model_init():
   """Return a freshly instantiated model. This ensure that the model
-  is trained from scratch, rather than training an previously 
-  instantiated and trained model for additional epochs.
+  is trained from scratch, rather than training a previously 
+  instantiated model for additional epochs.
   """
 
-  return AutoModelForSequenceClassification.from_pretrained(model_type, 
+  return AutoModelForSequenceClassification.from_pretrained('distilbert-base-uncased', 
                                                             num_labels=77).to(device)
   
-training_args =   {"output_dir":                  f'/Users/marshall.carter/Documents/huggingface/results',
+training_args =   {"output_dir":                  f'/_blog_results',
                    "overwrite_output_dir":        True,
                    "per_device_train_batch_size": 64,
                    "per_device_eval_batch_size":  64,
@@ -325,40 +313,58 @@ for metric_name, metric_value in evaluation_metrics.items():
 
 # COMMAND ----------
 
-# MAGIC %md Combine the model and tokenizer into a pipeline for inference
+# MAGIC %md ##### GPU vs. CPU vs. Quantized CPU
 
 # COMMAND ----------
 
 from transformers import pipeline
+from transformers.pipelines.pt_utils import KeyDataset
 import itertools
+from mlflow_model import get_predictions
 
-inference_pipeline = pipeline(task =               "text-classification", 
-                              model =              trainer.model,
-                              tokenizer =          tokenizer,
-                              batch_size =         256,
-                              # device = 0 for GPU inference
-                              device =             0,
-                              # Return only the label and probability associated 
-                              # with the best prediction
-                              top_k =              1,
-                              framework =          "pt")
+inference_dataset = KeyDataset(train_test['test'], 'text')
 
-# Pass raw text observations into the inference pipeline
-predictions = inference_pipeline(train_test['train']['text'],
-                                 # The same tokenization strategy used for model training.
-                                 padding = 'max_length',
-                                 truncation = True,
-                                 max_length = max_length)
-
-# Display predictions for the first five observations
-predictions = list(itertools.chain(*predictions))
-
-for prediction in predictions[:5]:
-  print(f"{prediction['label']}, probability: {round(prediction['score'], 3)}")
+inference_batch_size = 256
+truncation = True
+padding = 'max_length'
 
 # COMMAND ----------
 
-# MAGIC %md Model quantization  
+# MAGIC %md GPU inference
+
+# COMMAND ----------
+
+gpu_predictions = get_predictions(data=inference_dataset,
+                                 model = trainer.model,
+                                 tokenizer = tokenizer,
+                                 batch_size = inference_batch_size,
+                                 device = 0,
+                                 truncation = truncation,
+                                 padding = padding,
+                                 max_length = max_length)
+
+gpu_predictions[0]
+
+# COMMAND ----------
+
+# MAGIC %md CPU
+
+# COMMAND ----------
+
+cpu_predictions = get_predictions(data=inference_dataset,
+                                 model = trainer.model.to('cpu'),
+                                 tokenizer = tokenizer,
+                                 batch_size = inference_batch_size,
+                                 device = -1,
+                                 truncation = truncation,
+                                 padding = padding,
+                                 max_length = max_length)
+
+cpu_predictions[0]
+
+# COMMAND ----------
+
+# MAGIC %md Quantized and CPU
 
 # COMMAND ----------
 
@@ -371,11 +377,23 @@ quantized_model = quantize_dynamic(trainer.model.to("cpu"),
 
 # COMMAND ----------
 
-# MAGIC %md Quantized model size comparison
+quantized_predictions = get_predictions(data=inference_dataset,
+                                        model = quantized_model,
+                                        tokenizer = tokenizer,
+                                        batch_size = inference_batch_size,
+                                        device = -1,
+                                        truncation = truncation,
+                                        padding = padding,
+                                        max_length = max_length)
+
+quantized_predictions[0]
 
 # COMMAND ----------
 
-import torch
+# MAGIC %md Size comparison
+
+# COMMAND ----------
+
 from pathlib import Path
 
 non_quantized_state_dict = trainer.model.state_dict()
@@ -397,63 +415,16 @@ print(f"Non-quantized model size (mb): {non_quantized_size_mb}\nquantized model 
 
 # COMMAND ----------
 
-# MAGIC %md CPU batch inference time comparison
-
-# COMMAND ----------
-
-from mlflow_model import get_predictions
-from time import perf_counter
-
-# CPU inference comparisons
-inference_batch_size = 64
-device = -1 # -1 for CPU, 0 for GPU
-truncation = True
-padding = 'max_length'
-
-start_time = perf_counter()
-
-non_quantized_predicions = get_predictions(data=train_test['test']['text'],
-                                       model = trainer.model,
-                                       tokenizer = tokenizer,
-                                       batch_size = inference_batch_size,
-                                       device = device,
-                                       truncation = truncation,
-                                       padding = padding,
-                                       max_length = max_length)
-
-
-non_quantized_inference_time = perf_counter() - start_time
-
-start_time = perf_counter()
-
-quantized_predicions = get_predictions(data=train_test['test']['text'],
-                                       model = quantized_model,
-                                       tokenizer = tokenizer,
-                                       batch_size = inference_batch_size,
-                                       device = device,
-                                       truncation = truncation,
-                                       padding = padding,
-                                       max_length = max_length)
-
-quantized_inference_time = perf_counter() - start_time
-
-print(f"""
-        Non-quantized inference seconds: {round(non_quantized_inference_time, 1)}
-        Quantized inference seconds: {round(quantized_inference_time, 1)}
-        """)
-
-# COMMAND ----------
-
-# MAGIC %md Test dataset evaluation comparison
+# MAGIC %md Validation metrics comparison
 
 # COMMAND ----------
 
 from transformers import EvalPrediction
 
-non_quantized_eval_dataset = EvalPrediction(predictions = non_quantized_predicions, 
+non_quantized_eval_dataset = EvalPrediction(predictions = cpu_predictions, 
                                             label_ids = train_test['test']['label'])
 
-quantized_eval_dataset = EvalPrediction(predictions = quantized_predicions, 
+quantized_eval_dataset = EvalPrediction(predictions = quantized_predictions, 
                                         label_ids = train_test['test']['label'])
 
 non_quantized_eval_metrics = compute_single_label_metrics(non_quantized_eval_dataset)
@@ -475,8 +446,14 @@ for metric_name, metric_value in quantized_eval_metrics.items():
 
 sentiment_pipeline = pipeline('sentiment-analysis')
 
+# COMMAND ----------
+
 records = ["Transformers on Databricks are the best!",
            "Without Delta, our data lake has devolved into a data swamp!"]
 
 for prediction in sentiment_pipeline(records):
   print(prediction)
+
+# COMMAND ----------
+
+spark.sql("DROP TABLE IF EXISTS default.banking77_train_blog")
