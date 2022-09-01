@@ -9,14 +9,12 @@
 # COMMAND ----------
 
 import pickle
-
 from time import perf_counter
-import numpy as np
-import pandas as pd
 
 import mlflow
 from mlflow.tracking import MlflowClient
-
+import numpy as np
+import pandas as pd
 from pyspark.sql.types import (StructType, 
                                StructField, 
                                ArrayType, 
@@ -35,17 +33,6 @@ client = MlflowClient()
 
 # COMMAND ----------
 
-# MAGIC %md ##### View GPU memory availability and current consumption
-# MAGIC If GPU memory utilization is high, you may need to Detach & Re-attach the training notebook to clear the GPU's memory. This could occur if you just finished training a model with the current cluster.
-
-# COMMAND ----------
-
-get_gpu_utilization(memory_type='total')
-get_gpu_utilization(memory_type='used')
-get_gpu_utilization(memory_type='free')
-
-# COMMAND ----------
-
 # MAGIC %md Confirm the Experiment run id is valid
 
 # COMMAND ----------
@@ -61,6 +48,17 @@ except:
   raise Exception(f"Run id: {run_id} does not exist")
   
 model_info
+
+# COMMAND ----------
+
+# MAGIC %md ##### View GPU memory availability and current consumption
+# MAGIC If GPU memory utilization is high, you may need to Detach & Re-attach the training notebook to clear the GPU's memory. This could occur if you just finished training a model with the current cluster.
+
+# COMMAND ----------
+
+get_gpu_utilization(memory_type='total')
+get_gpu_utilization(memory_type='used')
+get_gpu_utilization(memory_type='free')
 
 # COMMAND ----------
 
@@ -89,9 +87,9 @@ model_info = client.get_run(run_id).to_dictionary()
 artifact_uri = model_info['info']['artifact_uri']
 
 # Register the model
-registered_model = client.create_model_version(name = model_registry_name,
-                                               source = artifact_uri + "/mlflow",
-                                               run_id = run_id)
+registered_model = client.create_model_version(name=model_registry_name,
+                                               source=artifact_uri + "/mlflow",
+                                               run_id=run_id)
 
 # Promote the model to the "Production" stage
 promote_to_prod = client.transition_model_version_stage(name=model_registry_name,

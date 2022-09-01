@@ -1,4 +1,5 @@
 import mlflow
+from mlflow.pyfunc.model import PythonModelContext
 import numpy as np
 import pandas as pd
 import torch
@@ -7,7 +8,8 @@ from transformers.pipelines.pt_utils import KeyDataset
 from typing import Optional, Union, List
 
 
-def get_predictions(data: Union[List, KeyDataset], model:AutoModelForSequenceClassification, tokenizer:AutoTokenizer, batch_size:str, 
+
+def get_predictions(data:Union[List, KeyDataset], model:AutoModelForSequenceClassification, tokenizer:AutoTokenizer, batch_size:str, 
                     device:int=0, padding:Union[bool, str]='longest', truncation:bool=True, max_length:int=512,
                     function_to_apply:Optional[str]=None) -> np.array([[float]]):
   """
@@ -110,7 +112,14 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
     self.model = None
     
     
-  def load_context(self, context):
+  def load_context(self, context:PythonModelContext):
+    """
+    This method is called once by MLflow when a model is loaded for inference using the
+    mlflow.pyfunc.load_model() function. PythonModelContext is a class with a single 
+    attribute, artifacts:dict[str,str], that is referenceable through a class 
+    property, context.artifacts. A PythonModelContext instance is passed automatically
+    by MLflow.
+    """
     
     # Both CPU and single-GPU inference are options using this custome MLFlow model, 
     # though CPU-based inference will be drastically slower and you may need to decrease 
@@ -124,12 +133,14 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
     self.model = AutoModelForSequenceClassification.from_pretrained(context.artifacts['model'])
 
 
-  def predict(self, context, model_input:Union[pd.DataFrame, KeyDataset]) -> np.array([[float]]):
+  def predict(self, context:PythonModelContext, model_input:Union[pd.DataFrame, KeyDataset]) -> np.array([[float]]):
     """
     Generate predictions given an input Pandas DataFrame containing a single feature column
     or a tranformers.KeyDataset. See the get_predictions function for more information.
     
     Args:
+      context: A PythonModelContext instance passed automatically by MLflow. See the load_context()
+               method for more information.
       model_input: Either a Pandas Dataframe or a transformers.KeyDataset. If passing a DataFrame,
                    the expectation is that the DataFrame has only one column and that column contains
                    the raw text to score.
@@ -151,13 +162,13 @@ class MLflowModel(mlflow.pyfunc.PythonModel):
     else:
       raise TypeError("Model input is neither a Pandas DataFrame nor a transformers KeyDataset")
     
-    predictions = get_predictions(data = model_input[model_input.columns[0]].tolist() if is_pandas else model_input, 
-                                  model = self.model, 
-                                  tokenizer = self.tokenizer, 
-                                  batch_size = self.inference_batch_size, 
-                                  padding = self.padding, 
-                                  truncation = self.truncation, 
-                                  max_length = self.max_length,
-                                  function_to_apply =  self.function_to_apply)
+    predictions = get_predictions(data=model_input[model_input.columns[0]].tolist() if is_pandas else model_input, 
+                                  model=self.model, 
+                                  tokenizer=self.tokenizer, 
+                                  batch_size=self.inference_batch_size, 
+                                  padding=self.padding, 
+                                  truncation=self.truncation, 
+                                  max_length=self.max_length,
+                                  function_to_apply=self.function_to_apply)
     
     return predictions
