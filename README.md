@@ -30,21 +30,21 @@ To get started training these models in your own Workspace, simply follow the be
  
  3. Open the **trainer** Notebook. Select "Run all" to train an initial model on the banking77 dataset. As part of the run, Widgets will appear at the top of the notebook enabling the user to choose different input datasets, models, and training parameters. To test different models and configurations, consider running the training notebook as a [Job](https://docs.databricks.com/data-engineering/jobs/index.html). When executing via a Job, you can pass parameters to overwrite the default widget values. Additionally, by increasing the Job's maximum concurrent runs, you can fit multiple transformer models concurrently by launching several jobs with different parameters.
 
-    <img src="img/job_parameters.png" alt="Mlflow tracking server runs" style="height: 325px; width:560px;"/>
+    <img src="img/job_parameters.png" alt="Setting job parameters" style="height: 225px; width:475px;"/>
     <p align="left">
-    <font size=2><i>Adjusting a Job's default parameters values to run different models against the same training dataset</i></font>
+    <font size=2><i>Adjusting a Job's default parameters values to run different models against the same training dataset.</i></font>
     </p> 
 
     <img src="img/multiple_job_runs.png" alt="Concurrent job runs" style="height: 425px; width:850px;"/>
     <p align="left">
-    <font size=2><i>Training multiple transformers models in parallel using Databricks Jobs</i></font>
+    <font size=2><i>Training multiple transformers models in parallel using Databricks Jobs.</i></font>
     </p>
  
  4. The trainer notebook will create a new MLflow Experiment. You can navigate to this Experiment by clicking the hyperlink that appears under the cell containing the MLflow logging logic, or, by navigating to the Experiments pane and selecting the Experiment named,  **transformer_experiments**. Each row in the Experiment corresponds to a different trained transformer model. Click on an entry, review its parameters and metrics, run multiple models against a dataset and compare their performance.  
  
-    <img src="img/mlflow_model_comparisons.png" alt="Comparing MLflow models" style="height: 425px; width:925px;"/>
+    <img src="img/mlflow_model_comparisons.png" alt="Comparing MLflow models" style="height: 385px; width:925px;"/>
     <p align="left">
-    <font size=2><i>Comparing transformer model runs in MLflow; notice the wide variation in model size and time taken to score 1,000 records</i></font>
+    <font size=2><i>Comparing transformer model runs in MLflow; notice the wide variation in model size.</i></font>
     </p>
     
  5. To leverage a trained model for inference, copy the **Run ID** of a model located in an Experiment run. Run the first several cells of the **inference** notebook to generate the Widget text box and paste the Run ID into the text box. The notebook will generate predictions for both the training and testing sets used to fit the model; it will then write these results to a new Delta table.
@@ -52,11 +52,11 @@ To get started training these models in your own Workspace, simply follow the be
     
     <img src="img/predictions.png" alt="Model predictions" style="height: 225px; width:775px;"/>
     <p align="left">
-    <font size=2><i>Model predictions example for banking77 dataset</i></font>
+    <font size=2><i>Model predictions example for banking77 dataset.</i></font>
     </p>
     
  6. Experiment with different training configurations for a model as outlined in the [transformers documentation](https://huggingface.co/docs/transformers/performance). Training configuration and GPU type can lead to large differences in training times.
-    <img src="img/training_experiments.png" alt="Concurrent job runs" style="height: 525px; width:925px;"/>
+    <img src="img/training_experiments.png" alt="Concurrent job runs" style="height: 555px; width:925px;"/>
     <p align="left">
     <font size=2><i>Training a single epoch using dynamic padding.</i></font>
     </p>
